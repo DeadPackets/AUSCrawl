@@ -243,7 +243,8 @@ async function crawl() {
         });
 
         if (res[0]._options.isNewRecord) {
-            console.log(chalk.magenta(`Inserting instructor ${totalResults.instructorInfo[i].name} [${totalResults.instructorInfo[i].email}]`))
+            if (process.env.VERBOSE)
+                console.log(chalk.magenta(`Inserting instructor ${totalResults.instructorInfo[i].name} [${totalResults.instructorInfo[i].email}]`))
         }
         
 
@@ -261,7 +262,8 @@ async function crawl() {
                 })
 
                 if (res[0]._options.isNewRecord) {
-                    console.log(chalk.yellow(`Inserting attribute ${attributesArr[j]}`))
+                    if (process.env.VERBOSE)
+                        console.log(chalk.yellow(`Inserting attribute ${attributesArr[j]}`))
                 }
             }
         }
@@ -279,17 +281,21 @@ async function crawl() {
                 })
 
                 if (res[0]._options.isNewRecord) {
-                    console.log(chalk.blue(`Inserting level ${levelsArr[j]}`))
+                    if (process.env.VERBOSE)
+                        console.log(chalk.blue(`Inserting level ${levelsArr[j]}`))
                 }
             }
         }
+        if (process.env.VERBOSE) {
+            console.log(chalk.green(`Inserting CRN ${totalResults.crnInfo[i].crn} - ${totalResults.crnInfo[i].classTitle} - ${totalResults.crnInfo[i].classShortName}`))
+        }
 
-        console.log(chalk.green(`Inserting CRN ${totalResults.crnInfo[i].crn} - ${totalResults.crnInfo[i].classTitle} - ${totalResults.crnInfo[i].classShortName}`))
         await CRNS.create(totalResults.crnInfo[i]);
     }
 
-
+    //Bye, bye browser!
     await browser.close();
+    console.log(chalk.white('Done crawling. Quitting now.'));
 
 }
 
