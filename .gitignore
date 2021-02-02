@@ -1,3 +1,6 @@
+# Don't push databases to github
+*.db
+
 # Logs
 logs
 *.log
