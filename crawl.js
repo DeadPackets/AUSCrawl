@@ -1,102 +1,20 @@
 const Sequelize = require('sequelize').Sequelize;
 const chalk = require('chalk');
 const puppeteer = require('puppeteer');
-const termID = process.env.TERM_ID || '202110';
-const sequelize = new Sequelize(`sqlite:./${termID}.db`, {
+const sequelize = new Sequelize(`sqlite:./aus_data.db`, {
 	logging: false
 });
-async function crawl() {
-	const CRNS = sequelize.define('crns', {
-		id: {
-			type: Sequelize.INTEGER,
-			autoIncrement: true,
-			primaryKey: true
-		},
-		crn: Sequelize.STRING,
-		subject: Sequelize.STRING,
-		classTitle: Sequelize.STRING,
-		classShortName: Sequelize.STRING,
-		classNumber: Sequelize.STRING,
-		classSection: Sequelize.INTEGER,
-		classType: Sequelize.STRING,
-		isLab: Sequelize.BOOLEAN,
-		instructor: Sequelize.STRING,
-		startTime: Sequelize.TIME,
-		endTime: Sequelize.TIME,
-		isSunday: Sequelize.BOOLEAN,
-		isMonday: Sequelize.BOOLEAN,
-		isTuesday: Sequelize.BOOLEAN,
-		isWednesday: Sequelize.BOOLEAN,
-		isThursday: Sequelize.BOOLEAN,
-		levels: Sequelize.STRING,
-		attributes: Sequelize.STRING,
-		credits: Sequelize.INTEGER,
-		classroom: Sequelize.STRING,
-		scheduleType: Sequelize.STRING,
-		seatsAvailable: Sequelize.BOOLEAN
-	});
 
-	const instructors = sequelize.define('instructors', {
-		id: {
-			type: Sequelize.INTEGER,
-			autoIncrement: true,
-			primaryKey: true
-		},
-		name: Sequelize.STRING,
-		email: Sequelize.STRING
-	});
-
-	const subjects = sequelize.define('subjects', {
-		id: {
-			type: Sequelize.INTEGER,
-			autoIncrement: true,
-			primaryKey: true
-		},
-		shortName: Sequelize.STRING,
-		longName: Sequelize.STRING
-	});
-
-	const levels = sequelize.define('levels', {
-		id: {
-			type: Sequelize.INTEGER,
-			autoIncrement: true,
-			primaryKey: true
-		},
-		level: Sequelize.STRING
-	});
-
-	const attributes = sequelize.define('attributes', {
-		id: {
-			type: Sequelize.INTEGER,
-			autoIncrement: true,
-			primaryKey: true
-		},
-		attribute: Sequelize.STRING
-	});
-
-	await sequelize.authenticate();
-	await sequelize.sync({
-		force: true
-	});
-
-	//Now that the database has been setup, time to start crawling
-	const browser = await puppeteer.launch({
-		args: ['--no-sandbox', '--disable-setuid-sandbox']
-	});
-
-	const page = await browser.newPage();
-	page.on('error', async (err) => { //For generic errors
-		console.log(chalk.red(err));
-		await browser.close();
-	});
+async function crawl(page, termID, CRNS, instructors, subjects, levels, attributes) {
+	//Statistics
+	let newSubjectCount = 0, newInstructorCount = 0, newLevelCount = 0, newAttributeCount = 0;
 
 	//Open the first page
-	console.log(chalk.blue('Browser and page launched.'))
 	await page.goto('https://banner.aus.edu/axp3b21h/owa/bwckschd.p_disp_dyn_sched');
 	await page.waitForSelector(`option[VALUE="${termID}`, {
 		timeout: 10000
 	}).catch(async (err) => {
-		await browser.close();
+		throw err;
 	});
 	//Select the semester from the input
 	await page.select('select', termID);
@@ -105,14 +23,13 @@ async function crawl() {
 	console.log(chalk.blue('Term selected and submitted.'))
 	await page.waitForSelector('input[type="submit"]');
 	await page.click('input[type="submit"]').catch(async err => {
-		await browser.close();
-		console.log("INPUT TIMEOUT");
+		throw err;
 	});
 
 	await page.waitForSelector('select[name="sel_subj"]', {
 		timeout: 10000
 	}).catch(async err => {
-		await browser.close();
+		throw err;
 	});
 
 	//Time to fetch the subjects
@@ -127,37 +44,53 @@ async function crawl() {
 		subjectsArr.push({
 			'shortName': subjectShortName[i],
 			'longName': subjectFullName[i]
-		})
+		});
+		const res = await subjects.findOrCreate({
+			where: {
+				shortName: subjectShortName[i]
+			},
+			defaults: {
+				shortName: subjectShortName[i],
+				longName: subjectFullName[i],
+				firstSeen: termID
+			}
+		});
+
+		if (res[0]._options.isNewRecord) {
+			if (process.env.VERBOSE)
+				console.log(chalk.magenta(`Inserting subject ${subjects[i].shortName} [${subjects[i].longName}]`));
+
+			newSubjectCount++;
+		}
 	}
 
 	//Insert subjects into the database
-	await subjects.bulkCreate(subjectsArr);
-	console.log(chalk.blue(`${subjectFullName.length} subjects inserted into the database.`));
+	console.log(chalk.blue(`${subjectsArr.length} total subjects loaded for crawling.`));
 
 	//Time to crawl CRNs
 	await page.select('select[name="sel_subj"]', ...subjectShortName);
 	// await page.select('select[name="sel_subj"]', 'COE');
 	await page.waitForSelector('input[type="submit"]').catch(async err => {
-		await browser.close();
-		console.log("INPUT TIMEOUT");
+		throw err;
 	});
 	await page.click('input[type="submit"]');
 	await page.waitForSelector('td.dddefault').catch(async err => {
-		await browser.close();
+		throw err;
 	});
 	await page.waitForSelector('th a').catch(async err => {
-		await browser.close();
+		throw err;
 	});
 	await page.waitForSelector('span.releasetext').catch(async err => {
-		await browser.close();
+		throw err;
 	});
 	console.log(chalk.blue('CRN Page loaded.'));
 
-	const totalResults = await page.$$eval('th a', result => {
+	const totalResults = await page.$$eval('th a', (result) => {
 		let returnedResult = {
 			crnInfo: [],
 			instructorInfo: []
 		};
+
 		for (let i = 0; i < result.length; i++) {
 			let crnTitle = result[i].innerText.split(' - ');
 			let descriptionElement = result[i].parentElement.parentElement.nextElementSibling;
@@ -215,7 +148,6 @@ async function crawl() {
 					'seatsAvailable': (classTable.querySelectorAll('td')[3].innerText === 'Y')
 				}
 
-				console.log(info['crn'] + " " + info['subject']);
 				let instructorInfo = {
 					name: classTable.querySelectorAll('td')[7].innerText.split('(P)')[0].trim(),
 					email: (info.instructor === 'TBA') ? 'none' : (classTable.querySelector('td a') ? classTable.querySelector('td a').href.split('mailto:')[1].trim() : 'none')
@@ -267,14 +199,19 @@ async function crawl() {
 		if (totalResults.instructorInfo[i]) {
 			let res = await instructors.findOrCreate({
 				where: {
-					email: totalResults.instructorInfo[i].email
+					name: totalResults.instructorInfo[i].name
 				},
-				defaults: totalResults.instructorInfo[i]
+				defaults: {
+					...totalResults.instructorInfo[i],
+					firstSeen: termID
+				}
 			});
 
 			if (res[0]._options.isNewRecord) {
 				if (process.env.VERBOSE)
-					console.log(chalk.magenta(`Inserting instructor ${totalResults.instructorInfo[i].name} [${totalResults.instructorInfo[i].email}]`))
+					console.log(chalk.magenta(`Inserting instructor ${totalResults.instructorInfo[i].name} [${totalResults.instructorInfo[i].email}]`));
+
+				newInstructorCount++;
 			}
 		}
 
@@ -287,13 +224,16 @@ async function crawl() {
 						attribute: attributesArr[j]
 					},
 					defaults: {
-						attribute: attributesArr[j]
+							attribute: attributesArr[j],
+							firstSeen: termID
 					}
 				})
 
 				if (res[0]._options.isNewRecord) {
 					if (process.env.VERBOSE)
-						console.log(chalk.yellow(`Inserting attribute ${attributesArr[j]}`))
+						console.log(chalk.yellow(`Inserting attribute ${attributesArr[j]}`));
+
+					newAttributeCount++;
 				}
 			}
 		}
@@ -306,13 +246,15 @@ async function crawl() {
 						level: levelsArr[j]
 					},
 					defaults: {
-						level: levelsArr[j]
+							level: levelsArr[j],
+							firstSeen: termID
 					}
 				})
 
 				if (res[0]._options.isNewRecord) {
 					if (process.env.VERBOSE)
-						console.log(chalk.blue(`Inserting level ${levelsArr[j]}`))
+						console.log(chalk.blue(`Inserting level ${levelsArr[j]}`));
+					newAttributeCount++;
 				}
 			}
 		}
@@ -320,16 +262,152 @@ async function crawl() {
 			console.log(chalk.green(`Inserting CRN ${totalResults.crnInfo[i].crn} - ${totalResults.crnInfo[i].classTitle} - ${totalResults.crnInfo[i].classShortName}`))
 		}
 
+		totalResults.crnInfo[i].termID = termID;
 		await CRNS.create(totalResults.crnInfo[i]);
 	}
 
-	//Bye, bye browser!
-	await browser.close();
-	console.log(chalk.white('Done crawling. Quitting now.'));
-
+	console.log(chalk.green(`Inserted ${totalResults.crnInfo.length} CRNS, ${newSubjectCount} new subjects, ${newInstructorCount} new instructors, ${newAttributeCount} new attributes and ${newLevelCount} new levels.`))
 }
 
-crawl().catch((err) => {
+async function startCrawl() {
+	const CRNS = sequelize.define('crns', {
+		id: {
+			type: Sequelize.INTEGER,
+			autoIncrement: true,
+			primaryKey: true
+		},
+		crn: Sequelize.STRING,
+		subject: Sequelize.STRING,
+		classTitle: Sequelize.STRING,
+		classShortName: Sequelize.STRING,
+		classNumber: Sequelize.STRING,
+		classSection: Sequelize.INTEGER,
+		classType: Sequelize.STRING,
+		isLab: Sequelize.BOOLEAN,
+		instructor: Sequelize.STRING,
+		startTime: Sequelize.TIME,
+		endTime: Sequelize.TIME,
+		isSunday: Sequelize.BOOLEAN,
+		isMonday: Sequelize.BOOLEAN,
+		isTuesday: Sequelize.BOOLEAN,
+		isWednesday: Sequelize.BOOLEAN,
+		isThursday: Sequelize.BOOLEAN,
+		levels: Sequelize.STRING,
+		attributes: Sequelize.STRING,
+		credits: Sequelize.INTEGER,
+		classroom: Sequelize.STRING,
+		scheduleType: Sequelize.STRING,
+		seatsAvailable: Sequelize.BOOLEAN,
+		termID: Sequelize.STRING
+	});
+
+	const instructors = sequelize.define('instructors', {
+		id: {
+			type: Sequelize.INTEGER,
+			autoIncrement: true,
+			primaryKey: true
+		},
+		name: Sequelize.STRING,
+		email: Sequelize.STRING,
+		firstSeen: Sequelize.STRING
+	});
+
+	const subjects = sequelize.define('subjects', {
+		id: {
+			type: Sequelize.INTEGER,
+			autoIncrement: true,
+			primaryKey: true
+		},
+		shortName: Sequelize.STRING,
+		longName: Sequelize.STRING,
+		firstSeen: Sequelize.STRING
+	});
+
+	const levels = sequelize.define('levels', {
+		id: {
+			type: Sequelize.INTEGER,
+			autoIncrement: true,
+			primaryKey: true
+		},
+		level: Sequelize.STRING,
+		firstSeen: Sequelize.STRING
+	});
+
+	const attributes = sequelize.define('attributes', {
+		id: {
+			type: Sequelize.INTEGER,
+			autoIncrement: true,
+			primaryKey: true
+		},
+		attribute: Sequelize.STRING,
+		firstSeen: Sequelize.STRING
+	});
+
+	const semesters = sequelize.define('semesters', {
+		id: {
+			type: Sequelize.INTEGER,
+			autoIncrement: true,
+			primaryKey: true
+		},
+		termID: Sequelize.STRING,
+		termName: Sequelize.STRING
+	});
+
+	await sequelize.authenticate();
+	await sequelize.sync({
+		force: true
+	});
+
+	//Now that the database has been setup, time to start crawling
+	const browser = await puppeteer.launch({
+		args: ['--no-sandbox', '--disable-setuid-sandbox']
+	});
+
+	const page = await browser.newPage();
+	page.on('error', async (err) => { //For generic errors
+		console.log(chalk.red(err));
+		throw err;
+	});
+
+	await page.goto('https://banner.aus.edu/axp3b21h/owa/bwckschd.p_disp_dyn_sched');
+
+	await page.waitForSelector(`option[VALUE="200520"]`, {
+		timeout: 10000
+	}).catch(async (err) => {
+		throw err;
+	});
+
+	//Fetch all the termIDs
+	const terms = await page.$$eval('option[value]', result => {
+		let returnedResult = [];
+		for (let i = 0; i < result.length; i++) {
+			if (result[i].innerText !== 'None') {
+				returnedResult.push({
+					termID: result[i].value,
+					termName: result[i].innerText.replace(' (View only)', '')
+				});
+			}
+		}
+		return returnedResult.sort((a,b) => (a.termID > b.termID) ? 1 : ((b.termID > a.termID) ? -1 : 0));
+	});
+
+	await semesters.bulkCreate(terms)
+	console.log(chalk.green(`${terms.length} semesters inserted into the database.`));
+
+	//Now we loop over all semesters
+	for (let i = 0; i < terms.length; i++) {
+		console.log(chalk.white(`Starting crawl for ${terms[i].termName} [${terms[i].termID}]`))
+		await crawl(page, terms[i].termID, CRNS, instructors, subjects, levels, attributes).catch((err) => {
+			throw err;
+		});
+	}
+
+	console.log(chalk.white('Done crawling now. Exiting...'));
+	process.exit(0);
+}
+
+startCrawl().catch((err) => {
 	console.log(err);
 	console.log(chalk.red('Error! Quitting now...'));
+	process.exit(1);
 });
