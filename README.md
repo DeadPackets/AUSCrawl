@@ -1,5 +1,13 @@
 # AUSCrawl
 
+![Lines of code](https://img.shields.io/tokei/lines/github/DeadPackets/AUSCrawl)
+![GitHub](https://img.shields.io/github/license/DeadPackets/AUSCrawl)
+![GitHub package.json version](https://img.shields.io/github/package-json/v/DeadPackets/AUSCrawl)
+![GitHub issues](https://img.shields.io/github/issues/DeadPackets/AUSCrawl)
+[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://GitHub.com/Naereen/StrapDown.js/graphs/commit-activity)
+[![Open Source Love](https://badges.frapsoft.com/os/v1/open-source.png?v=103)](https://github.com/ellerbrock/open-source-badges/)
+
+
 **AUSCrawl** is a web scraper and crawler that scrapes [AUS Banner](https://banner.aus.edu/) for data on every single course, instructor, level, and attribute for **every semester in AUS since 2005** and saves it in an SQLite database to be queried.
 
 ## Why create this project?
