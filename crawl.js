@@ -58,7 +58,7 @@ async function crawl(page, termID, CRNS, instructors, subjects, levels, attribut
 
 		if (res[0]._options.isNewRecord) {
 			if (process.env.VERBOSE)
-				console.log(chalk.magenta(`Inserting subject ${subjects[i].shortName} [${subjects[i].longName}]`));
+				console.log(chalk.magenta(`Inserting subject ${subjectShortName[i]} [${subjectFullName[i]}]`));
 
 			newSubjectCount++;
 		}
