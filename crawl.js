@@ -395,12 +395,12 @@ async function startCrawl() {
 	console.log(chalk.green(`${terms.length} semesters inserted into the database.`));
 
 	//Now we loop over all semesters
-	for (let i = 0; i < terms.length; i++) {
-		console.log(chalk.white(`Starting crawl for ${terms[i].termName} [${terms[i].termID}]`))
-		await crawl(page, terms[i].termID, CRNS, instructors, subjects, levels, attributes).catch((err) => {
+//	for (let i = 0; i < terms.length; i++) {
+		console.log(chalk.white(`Starting crawl for ${terms[terms.length - 1].termName} [${terms[terms.length - 1].termID}]`))
+		await crawl(page, terms[terms.length - 1].termID, CRNS, instructors, subjects, levels, attributes).catch((err) => {
 			throw err;
 		});
-	}
+//	}
 
 	console.log(chalk.white('Done crawling now. Exiting...'));
 	process.exit(0);
