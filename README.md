@@ -10,6 +10,8 @@
 
 **AUSCrawl** is a web scraper and crawler that scrapes [AUS Banner](https://banner.aus.edu/) for data on every single course, instructor, level, and attribute for **every semester in AUS since 2005** and saves it in an SQLite database to be queried.
 
+Note: There is a WIP Python re-write of this project.
+
 ## Why create this project?
 
 I created this project as a way to practice using a headless browser to scrape mass data while also learning asynchronous code, using the Sequelize ORM and optimizing my code in general. Additionally, I think the dataset this project produces can allow many others to practice data science or build applications that make use of this data.
