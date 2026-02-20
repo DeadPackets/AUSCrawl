@@ -8,11 +8,11 @@
     <img src="https://img.shields.io/badge/python-3.13+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.13+">
     <img src="https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite">
     <img src="https://img.shields.io/badge/HTTP%2F2-async-blue?style=flat-square" alt="HTTP/2 Async">
-    <img src="https://img.shields.io/github/repo-size/DeadPackets/AUSCrawl?style=flat-square&label=repo%20size" alt="Repo Size">
+    <img src="https://img.shields.io/badge/database-74%20MB-orange?style=flat-square" alt="Database 74 MB">
     <br/>
     <img src="https://img.shields.io/badge/courses-73%2C418-green?style=flat-square" alt="73,418 courses">
     <img src="https://img.shields.io/badge/semesters-98-green?style=flat-square" alt="98 semesters">
-    <img src="https://img.shields.io/badge/dependencies-152%2C968-green?style=flat-square" alt="152,968 dependencies">
+    <img src="https://img.shields.io/badge/instructors-1%2C649-green?style=flat-square" alt="1,649 instructors">
     <img src="https://img.shields.io/badge/made%20with-%E2%9D%A4-red?style=flat-square" alt="Made with love">
   </p>
 </p>
@@ -134,6 +134,22 @@ The SQLite database contains 10 normalized tables with proper indexes:
 - `catalog` — course descriptions, credit/lecture/lab hours, department
 - `section_details` — prerequisites, corequisites, restrictions, waitlist, fees per section
 - `course_dependencies` — structured prerequisite/corequisite links with minimum grade requirements
+
+---
+
+## Banner Technical Details
+
+AUS uses [Ellucian Banner](https://www.ellucian.com/solutions/ellucian-banner), a student information system widely deployed across universities. The public-facing schedule search is served at `banner.aus.edu` behind Cloudflare, exposing several OWA (Oracle Web Agent) endpoints:
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/axp3b21h/owa/bwckschd.p_disp_dyn_sched` | GET | Semester dropdown — returns all available term IDs |
+| `/axp3b21h/owa/bwckgens.p_proc_term_date` | POST | Subject listing — returns available subjects for a given term |
+| `/axp3b21h/owa/bwckschd.p_get_crse_unsec` | POST | Course search — returns HTML tables of all matching sections |
+| `/axp3b21h/owa/bwckctlg.p_display_courses` | GET | Course catalog — returns descriptions, credit hours, department |
+| `/axp3b21h/owa/bwckschd.p_disp_detail_sched` | GET | Section detail — returns prerequisites, corequisites, restrictions, waitlist, fees |
+
+The course search endpoint accepts all subject codes in a single POST body (up to ~4,500 bytes before the WAF rejects it), returning a large HTML page with `<table class="datadisplaytable">` rows. Instructor emails are obfuscated using Cloudflare's email protection (XOR encoding with the first byte as key). The server enforces HTTP/2 stream limits (~10,000 streams per connection) and rate limits on the GET endpoints (~100 req/s before 429 responses begin).
 
 ---
 
