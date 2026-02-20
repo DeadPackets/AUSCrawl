@@ -1,0 +1,10 @@
+[project]
+name = "auscrawl"
+version = "0.1.0"
+description = "Fast AUS Banner course data scraper"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx[http2]>=0.28.1",
+    "lxml>=6.0.2",
+    "rich>=14.3.3",
+]
