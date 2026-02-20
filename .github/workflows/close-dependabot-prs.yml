@@ -1,0 +1,29 @@
+name: Close Dependabot PRs
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  close-dependabot-prs:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Close all open Dependabot PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr list \
+            --repo "${{ github.repository }}" \
+            --author "app/dependabot" \
+            --state open \
+            --json number \
+            --jq '.[].number' | \
+          while read -r pr; do
+            gh pr close "$pr" \
+              --repo "${{ github.repository }}" \
+              --comment "Closing this Dependabot PR as the project is being rewritten in Python (see PR #18). JavaScript dependencies are no longer relevant."
+          done
