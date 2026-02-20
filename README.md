@@ -1,34 +1,116 @@
 # AUSCrawl
 
+> [!WARNING]
+> **Do not run the crawler unless you know what you are doing.** The crawler makes tens of thousands of requests to AUS Banner and can easily overwhelm the server if misconfigured, which can result in service disruption and get you in trouble with the university. A pre-built database (`aus_courses.db`) is already included in this repository with a complete snapshot of all course data since 2005 — **use that instead.**
+
 A fast, async web crawler that scrapes [AUS Banner](https://banner.aus.edu/) for course data across **every semester since 2005** and stores it in an SQLite database.
 
-Written in Python. Single file. ~14 minutes for a full crawl of 74,000+ course sections, catalog descriptions, prerequisites, and more.
+Written in Python. Single file. ~15 minutes for a full crawl of 74,000+ course sections, catalog descriptions, prerequisites, and more.
 
-## What it collects
+## The database
 
-AUSCrawl hits three Banner endpoints to build a comprehensive dataset:
+This repository includes `aus_courses.db`, a complete SQLite database containing **every course, instructor, prerequisite, and catalog description from AUS Banner since Fall 2005**. You don't need to run the crawler — just download the DB and start querying.
 
-| Phase | Source | Data |
-|-------|--------|------|
-| **Courses** | Schedule listing | CRN, subject, title, section, credits, schedule type, times, days, classroom, instructor, seat availability |
-| **Catalog** | Course catalog | Description, credit/lecture/lab hours, department |
-| **Details** | Section detail | Prerequisites, corequisites, restrictions, waitlist info, fees, structured dependency links with minimum grades |
+**What's inside:**
 
-All data is stored across **10 normalized tables** in SQLite with proper indexes for fast querying.
+| Table | Records | Description |
+|-------|---------|-------------|
+| `semesters` | 98 | Every term from Fall 2005 to the present |
+| `courses` | 73,418 | Every course section ever offered |
+| `instructors` | 1,649 | All instructors with emails and first appearance |
+| `subjects` | 98 | All subject codes (COE, ENG, MTH, etc.) |
+| `catalog` | 3,007 | Course descriptions, credit/lecture/lab hours |
+| `section_details` | 71,754 | Prerequisites, corequisites, restrictions, waitlist, fees |
+| `course_dependencies` | 152,968 | Structured prerequisite/corequisite links with minimum grades |
+| `levels` | 9 | Academic levels (Undergraduate, Graduate, etc.) |
+| `attributes` | 225 | Course attributes |
 
-## Quick start
+### Build something cool
 
-Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
+This dataset is a goldmine for AUS students. Here are some ideas:
+
+- **Prerequisite visualizer** — build an interactive graph of course dependencies for your major
+- **Schedule planner** — help students find open sections that fit their timetable
+- **Instructor tracker** — see which professors teach what, and how their course assignments have changed over the years
+- **Course trend analysis** — which courses are offered less frequently? Which departments are growing?
+- **Grade requirement explorer** — find every course that requires a minimum grade of C- or higher
+- **Data science projects** — 20 years of course data across 98 subjects is a great dataset for learning SQL, pandas, or building dashboards
+
+### Getting started with the database
 
 ```bash
-git clone https://github.com/DeadPackets/AUSCrawl
-cd AUSCrawl
-uv run python crawl.py
+# Open it directly with sqlite3
+sqlite3 aus_courses.db
+
+# Or use Python
+python3 -c "
+import sqlite3
+conn = sqlite3.connect('aus_courses.db')
+for row in conn.execute('SELECT term_name, COUNT(*) FROM courses JOIN semesters ON courses.term_id = semesters.term_id GROUP BY courses.term_id ORDER BY courses.term_id DESC LIMIT 5'):
+    print(row)
+"
 ```
 
-That's it. No `pip install`, no virtual env setup — `uv` handles everything.
+### Example queries
 
-## Usage
+```sql
+-- All courses taught by a specific instructor
+SELECT term_id, subject, course_number, title, days, start_time, end_time
+FROM courses WHERE instructor_name LIKE '%Smith%'
+ORDER BY term_id DESC;
+
+-- Courses with prerequisites and minimum grades
+SELECT d.subject, d.course_number, d.dep_type, d.minimum_grade,
+       sd.prerequisites
+FROM course_dependencies d
+JOIN section_details sd ON sd.crn = d.crn AND sd.term_id = d.term_id
+WHERE d.dep_type = 'prerequisite'
+GROUP BY d.subject, d.course_number;
+
+-- How many sections per semester
+SELECT s.term_name, COUNT(*) as sections
+FROM courses c JOIN semesters s ON c.term_id = s.term_id
+GROUP BY c.term_id ORDER BY c.term_id;
+
+-- Course catalog with hours breakdown
+SELECT subject, course_number, description, credit_hours, lecture_hours, lab_hours
+FROM catalog WHERE subject = 'COE';
+
+-- Find all prerequisites for a specific course
+SELECT d.subject, d.course_number, d.minimum_grade
+FROM course_dependencies d
+JOIN courses c ON c.crn = d.crn AND c.term_id = d.term_id
+WHERE c.subject = 'COE' AND c.course_number = '390'
+GROUP BY d.subject, d.course_number;
+```
+
+## Database schema
+
+The SQLite database contains 10 normalized tables with proper indexes:
+
+**Core tables:**
+- `semesters` — term ID and name (e.g. `202620`, `Fall 2025`)
+- `subjects` — subject codes and full names (e.g. `COE`, `Computer Engineering`)
+- `courses` — every course section with schedule, instructor, classroom, etc.
+- `instructors` — deduplicated instructor names and emails with `first_seen`
+- `levels` — academic levels (Undergraduate, Graduate, etc.)
+- `attributes` — course attributes with `first_seen`
+
+**Extended tables:**
+- `catalog` — course descriptions, credit/lecture/lab hours, department
+- `section_details` — prerequisites, corequisites, restrictions, waitlist, fees per section
+- `course_dependencies` — structured prerequisite/corequisite links with minimum grade requirements
+
+## Crawler documentation
+
+> [!CAUTION]
+> Only run the crawler if you need fresher data than what's in the included database. Be aware that aggressive crawling can take down AUS Banner and result in your IP being banned. The default settings are tuned to be safe, but modifying worker counts or running multiple instances simultaneously can cause problems.
+
+### Requirements
+
+Python 3.13+ and [uv](https://docs.astral.sh/uv/).
+
+### Usage
 
 ```
 uv run python crawl.py [options]
@@ -47,66 +129,7 @@ uv run python crawl.py [options]
 | `--no-details` | Skip section detail scraping |
 | `-v`, `--verbose` | Debug-level logging |
 
-### Examples
-
-```bash
-# Full crawl (all semesters, all data)
-uv run python crawl.py --force
-
-# Just the latest semester, skip slow detail scraping
-uv run python crawl.py --latest --no-details
-
-# Resume an interrupted crawl
-uv run python crawl.py --resume
-
-# Specific semesters only
-uv run python crawl.py -t 202620 202510
-```
-
-## Database schema
-
-The output SQLite database contains 10 tables:
-
-**Core tables:**
-- `semesters` — term ID and name (e.g. `202620`, `Fall 2025`)
-- `subjects` — subject codes and full names (e.g. `COE`, `Computer Engineering`)
-- `courses` — every course section with schedule, instructor, classroom, etc.
-- `instructors` — deduplicated instructor names and emails with `first_seen`
-- `levels` — academic levels (Undergraduate, Graduate, etc.)
-- `attributes` — course attributes with `first_seen`
-
-**Extended tables:**
-- `catalog` — course descriptions, credit/lecture/lab hours, department
-- `section_details` — prerequisites, corequisites, restrictions, waitlist, fees per section
-- `course_dependencies` — structured prerequisite/corequisite links with minimum grade requirements
-
-### Example queries
-
-```sql
--- All courses taught by a specific instructor
-SELECT term_id, subject, course_number, title, days, start_time, end_time
-FROM courses WHERE instructor_name LIKE '%Smith%'
-ORDER BY term_id DESC;
-
--- Courses with prerequisites
-SELECT d.subject, d.course_number, d.dep_type, d.minimum_grade,
-       sd.prerequisites
-FROM course_dependencies d
-JOIN section_details sd ON sd.crn = d.crn AND sd.term_id = d.term_id
-WHERE d.dep_type = 'prerequisite'
-GROUP BY d.subject, d.course_number;
-
--- How many sections per semester
-SELECT s.term_name, COUNT(*) as sections
-FROM courses c JOIN semesters s ON c.term_id = s.term_id
-GROUP BY c.term_id ORDER BY c.term_id;
-
--- Course catalog with hours breakdown
-SELECT subject, course_number, description, credit_hours, lecture_hours, lab_hours
-FROM catalog WHERE subject = 'COE';
-```
-
-## How it works
+### How it works
 
 The crawler runs in 5 phases:
 
@@ -116,17 +139,6 @@ The crawler runs in 5 phases:
 4. **Catalog scraping** — GETs course catalog pages for a sample of 6 evenly-spaced terms to collect descriptions, hours, and departments (10 concurrent workers)
 5. **Detail scraping** — GETs the section detail page for every unique CRN/term pair to extract prerequisites, corequisites, restrictions, waitlist info, and fees (10 concurrent workers)
 
-### Performance
-
-A full crawl typically produces:
-- ~74,000 course sections across 98 semesters
-- ~4,100 catalog entries
-- ~72,000 section details
-- ~153,000 dependency records
-- ~73 MB database
-
-Total runtime: **~14 minutes**.
-
 ### Technical details
 
 - **Async HTTP/2** via `httpx` with connection pooling and automatic retry with exponential backoff
@@ -135,7 +147,7 @@ Total runtime: **~14 minutes**.
 - **Catalog sampling** reduces catalog requests by ~80% while maintaining full course coverage
 - **Cloudflare email protection** decoding (XOR-obfuscated instructor emails)
 - **Crash resilience** — each phase saves to DB immediately; detail phase does periodic batch saves every 5,000 entries; `--resume` skips completed work
-- **Rate-limit aware** — respects server 429 responses with differentiated backoff; GET endpoints capped at 10 workers to avoid triggering bans
+- **Rate-limit aware** — respects server 429 responses with exponential backoff; GET endpoints capped at 10 workers to avoid triggering bans
 
 ## License
 
