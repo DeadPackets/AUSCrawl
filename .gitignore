@@ -1,5 +1,6 @@
-# Database files
+# Database files (except the included snapshot)
 *.db
+!aus_courses.db
 
 # Python
 __pycache__/
