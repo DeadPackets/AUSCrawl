@@ -35,8 +35,9 @@ Everything lives in `crawl.py`, organized top-to-bottom by section comment banne
 1. **Semesters** — GET the term dropdown, parse `<OPTION>`s into `Semester`s.
 2. **Subjects** — build the complete subject list. **Fast path:** if the target DB already has subjects and `--force` is not set, reuse them. **Fresh path:** fetch subjects from *every* semester concurrently and dedupe, because Banner's subject dropdown varies per term.
 3. **Courses** — for each semester, POST all subject codes to the schedule-search endpoint and parse the returned HTML tables. Subjects are split into batches of 250 to stay under Banner's ~4500-byte WAF body limit; all batches for a semester fire concurrently. Runs at `-w` workers (default 50). Saved immediately as a crash-safe checkpoint.
-4. **Catalog** — GET catalog descriptions/hours. Only **6 evenly-spaced sample terms** are crawled (course descriptions barely change over time), cutting ~80% of requests.
-5. **Details** — GET per-section prerequisites, corequisites, restrictions, waitlist, and fees for every unique `(crn, term_id)`. Also extracts structured `course_dependencies` rows with minimum grades.
+4. **Catalog** — GET catalog descriptions/hours (`p_display_courses`). Only **6 evenly-spaced sample terms** are crawled (course descriptions barely change over time), cutting ~80% of requests.
+4b. **Catalog detail** — GET `p_disp_course_detail` once per unique `(subject, course_number)` (its most recent term). Captures course-level **attributes** (degree-requirement tags), schedule types, levels, and catalog-level prereqs/coreqs/restrictions → `catalog_detail` table. Gated by `--no-catalog`.
+5. **Details** — GET per-section prerequisites, corequisites, restrictions, waitlist, and fees for every unique `(crn, term_id)`. Also extracts structured `course_dependencies` rows with minimum grades, a boolean prereq/coreq **expression tree** (`*_json` columns), and typed restriction groups (`restrictions_json`).
 
 Cross-cutting design points that span multiple functions:
 
@@ -45,10 +46,18 @@ Cross-cutting design points that span multiple functions:
 - **`request_with_retry`** is the single choke point for all HTTP. It retries only *recoverable* statuses (`RETRYABLE_STATUS` = 403/408/429/5xx — permanent 4xx like 404/400 fail fast), uses jittered exponential backoff (`backoff_delay`, equal-jitter so the fleet doesn't retry in lockstep), detects Cloudflare WAF blocks via `is_waf_block` (scans only the first 64 KB of the body), and feeds 429/503/WAF signals back to the optional `limiter`. New endpoints should go through it; pass the phase's limiter for adaptive feedback.
 - **Chronological `first_seen`.** `bulk_save` sorts courses by `term_id` before inserting so that `INSERT OR IGNORE` naturally keeps the earliest occurrence — that's how `instructors`, `levels`, and `attributes` get a correct `first_seen` for free. `subjects` is the one exception: its `first_seen` is backfilled afterward by `fix_first_seen` (a `MIN(term_id)` over `courses`).
 - **Crash resilience.** Each phase commits as it finishes; Phase 5 also batch-saves every `DETAIL_BATCH_SIZE` (5000) sections. Combined with `--resume` (skips done semesters, already-fetched detail rows, and already-present catalog subjects), an interrupted crawl can be continued without redoing work. DB PRAGMAs (`journal_mode=WAL`, `synchronous=NORMAL`) are tuned for write speed while staying safe against OS crash / power loss. Catalog writes are made monotonic by `save_catalog`/`better_catalog`, which merge against existing rows (longest description wins, missing hours/department filled) so a re-run can only improve a row.
-- **Cloudflare email decoding.** Instructor emails are XOR-obfuscated in the HTML; `decode_cf_email` reverses it (first byte is the key).
+- **Cloudflare email decoding.** Instructor emails are XOR-obfuscated in the HTML; `decode_cf_email` reverses it (first byte is the key). `parse_instructors` walks the cell to capture *all* instructors (primary + secondary), not just the `(P)` primary.
+- **Shared OWA section extraction.** `extract_label_sections` does one document-order walk of an OWA content cell returning per-label ordered items, from which `collapse_items` (legacy text), `section_lines` (G4 restrictions), and `requirement_tree`/`requirement_tokens` (G3 prereq logic) are derived. Both `parse_detail_page` and `parse_catalog_detail` use it, so prereq/restriction parsing is identical across the schedule-detail and catalog-detail pages.
 
 ## Schema notes
 
-10 tables defined inline in the `SCHEMA` string. `courses` is the fact table; uniqueness is `(crn, term_id, class_type, days, start_time)` so a course with multiple meeting blocks (e.g. lecture + lab) produces multiple rows. `course_dependencies` is the structured/queryable form of the free-text prerequisites in `section_details`. `term_id` (e.g. `202620` = Fall 2025) is the join key across `courses`, `semesters`, `section_details`, and `course_dependencies`. See README.md for example queries and full table descriptions.
+13 tables defined inline in the `SCHEMA` string. `courses` is the fact table; uniqueness is `(crn, term_id, class_type, days, start_time, end_time, classroom)` so a course with multiple meeting blocks (e.g. lecture + lab) produces multiple rows. `term_id` (e.g. `202620` = Spring 2026) is the join key across most tables. Relationships worth knowing:
+- `section_instructors(crn, term_id, name, email, is_primary)` — all instructors per section (G1); `courses.instructor_name/email` still carry the primary for backward compatibility.
+- `course_dependencies` is the flat/queryable form of prereqs; `section_details.prerequisites_json` / `corequisites_json` hold the full boolean tree (AND/OR/grouping, level, min_grade, concurrent), and `restrictions_json` holds typed include/exclude groups.
+- `catalog` (description/hours/department from `p_display_courses`) and `catalog_detail` (attributes/schedule-types/levels/course-level prereqs from `p_disp_course_detail`) are both keyed by `(subject, course_number)` — join them for the full course picture.
+
+See README.md for example queries and full table descriptions.
+
+**Note:** the committed `aus_courses.db` predates the G1–G4 schema additions — the new tables/columns only populate on a fresh crawl, so a DB refresh + re-commit is needed for the shipped snapshot to include them.
 
 The Banner endpoint reference (URLs, methods, WAF/rate-limit behavior) is documented in README.md under "Banner Technical Details" — consult it before touching the HTTP layer.

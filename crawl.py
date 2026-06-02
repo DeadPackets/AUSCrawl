@@ -16,7 +16,7 @@ import random
 import re
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 from urllib.parse import urlencode
 
@@ -43,6 +43,7 @@ ENDPOINTS = {
     "subjects": f"{BASE_URL}/bwckgens.p_proc_term_date",
     "courses": f"{BASE_URL}/bwckschd.p_get_crse_unsec",
     "catalog": f"{BASE_URL}/bwckctlg.p_display_courses",
+    "catalog_detail": f"{BASE_URL}/bwckctlg.p_disp_course_detail",
     "detail": f"{BASE_URL}/bwckschd.p_disp_detail_sched",
 }
 DEFAULT_WORKERS = 50
@@ -78,6 +79,8 @@ RE_WHITESPACE = re.compile(r"\s+")
 RE_CF_EMAIL = re.compile(r"/cdn-cgi/l/email-protection#([a-fA-F0-9]+)")
 RE_OPTION = re.compile(r'OPTION VALUE="([^"]+)"[^>]*>([^<]+)')
 RE_MIN_GRADE = re.compile(r"Minimum Grade of\s+([A-Z][+-]?)")
+RE_PAREN_P = re.compile(r"\(\s*P?\s*\)")        # "(P)" primary marker or stray "()"
+RE_PRIMARY = re.compile(r"\(\s*P\s*\)")          # detect the primary marker in text
 
 # ── Data Classes ─────────────────────────────────────────────────────────────
 
@@ -92,6 +95,13 @@ class Semester:
 class Subject:
     short_name: str
     long_name: str
+
+
+@dataclass(slots=True)
+class InstructorRef:
+    name: str
+    email: str = ""
+    is_primary: bool = False
 
 
 @dataclass(slots=True)
@@ -116,9 +126,11 @@ class Course:
     seats_available: Optional[bool] = None
     classroom: str = ""
     date_range: str = ""
-    instructor_name: str = ""
-    instructor_email: str = ""
+    instructor_name: str = ""   # primary instructor (kept for backward compat)
+    instructor_email: str = ""  # primary instructor's email
     is_lab: bool = False
+    # All instructors on this meeting block (primary + secondary). See G1.
+    instructors: list[InstructorRef] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -143,6 +155,9 @@ class SectionDetail:
     waitlist_actual: int = 0
     waitlist_remaining: int = 0
     fees: str = ""  # JSON array of {description, amount}
+    prerequisites_json: str = ""   # G3: boolean expression tree (JSON)
+    corequisites_json: str = ""    # G3: boolean expression tree (JSON)
+    restrictions_json: str = ""    # G4: typed include/exclude groups (JSON)
 
 
 @dataclass(slots=True)
@@ -153,6 +168,20 @@ class CourseDependency:
     subject: str
     course_number: str
     minimum_grade: str = ""
+
+
+@dataclass(slots=True)
+class CatalogDetail:
+    """Course-level data from bwckctlg.p_disp_course_detail (G2)."""
+    subject: str
+    course_number: str
+    term_id: str = ""           # the term whose catalog entry was read
+    levels: str = ""
+    schedule_types: str = ""
+    course_attributes: str = ""  # degree-requirement tags
+    prerequisites: str = ""
+    corequisites: str = ""
+    restrictions: str = ""
 
 
 # ── Utilities ────────────────────────────────────────────────────────────────
@@ -305,7 +334,34 @@ CREATE TABLE IF NOT EXISTS section_details (
     waitlist_actual INTEGER DEFAULT 0,
     waitlist_remaining INTEGER DEFAULT 0,
     fees TEXT DEFAULT '',
+    prerequisites_json TEXT DEFAULT '',
+    corequisites_json TEXT DEFAULT '',
+    restrictions_json TEXT DEFAULT '',
     UNIQUE(crn, term_id)
+);
+
+CREATE TABLE IF NOT EXISTS section_instructors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    crn TEXT NOT NULL,
+    term_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    email TEXT,
+    is_primary BOOLEAN DEFAULT 0,
+    UNIQUE(crn, term_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS catalog_detail (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject TEXT NOT NULL,
+    course_number TEXT NOT NULL,
+    term_id TEXT DEFAULT '',
+    levels TEXT DEFAULT '',
+    schedule_types TEXT DEFAULT '',
+    course_attributes TEXT DEFAULT '',
+    prerequisites TEXT DEFAULT '',
+    corequisites TEXT DEFAULT '',
+    restrictions TEXT DEFAULT '',
+    UNIQUE(subject, course_number)
 );
 
 CREATE TABLE IF NOT EXISTS course_dependencies (
@@ -323,6 +379,9 @@ CREATE INDEX IF NOT EXISTS idx_catalog_subject ON catalog(subject);
 CREATE INDEX IF NOT EXISTS idx_section_details_crn ON section_details(crn, term_id);
 CREATE INDEX IF NOT EXISTS idx_deps_crn ON course_dependencies(crn, term_id);
 CREATE INDEX IF NOT EXISTS idx_deps_target ON course_dependencies(subject, course_number);
+CREATE INDEX IF NOT EXISTS idx_section_instructors ON section_instructors(crn, term_id);
+CREATE INDEX IF NOT EXISTS idx_section_instructors_name ON section_instructors(name);
+CREATE INDEX IF NOT EXISTS idx_catalog_detail_subject ON catalog_detail(subject);
 """
 
 
@@ -338,8 +397,9 @@ def init_db(db_path: str, force: bool = False) -> sqlite3.Connection:
 
     if force:
         for table in (
-            "course_dependencies", "section_details", "catalog",
-            "courses", "instructors", "subjects", "levels", "attributes", "semesters",
+            "course_dependencies", "section_details", "section_instructors",
+            "catalog", "catalog_detail", "courses", "instructors", "subjects",
+            "levels", "attributes", "semesters",
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.commit()
@@ -374,11 +434,13 @@ def bulk_save(
     all_courses.sort(key=lambda t: t[0].term_id)
 
     instructors_seen: set[tuple[str, str]] = set()
+    sec_instr_seen: set[tuple[str, str, str]] = set()
     levels_seen: set[str] = set()
     attrs_seen: set[str] = set()
 
     course_rows = []
     instructor_rows = []
+    section_instructor_rows = []
     level_rows = []
     attr_rows = []
 
@@ -393,11 +455,26 @@ def bulk_save(
                 c.is_lab,
             ))
 
-            if c.instructor_name and c.instructor_name != "TBA":
-                key = (c.instructor_name, c.instructor_email or "")
-                if key not in instructors_seen:
-                    instructors_seen.add(key)
-                    instructor_rows.append((c.instructor_name, c.instructor_email or None, semester.term_id))
+            # Every instructor (primary + secondary) feeds the global table and
+            # the per-section link table. Falls back to the primary fields for
+            # the no-schedule-table case where `instructors` is empty.
+            refs = c.instructors or (
+                [InstructorRef(c.instructor_name, c.instructor_email, True)]
+                if c.instructor_name and c.instructor_name != "TBA" else []
+            )
+            for ref in refs:
+                if not ref.name or ref.name == "TBA":
+                    continue
+                gkey = (ref.name, ref.email or "")
+                if gkey not in instructors_seen:
+                    instructors_seen.add(gkey)
+                    instructor_rows.append((ref.name, ref.email or None, semester.term_id))
+                skey = (c.crn, c.term_id, ref.name)
+                if skey not in sec_instr_seen:
+                    sec_instr_seen.add(skey)
+                    section_instructor_rows.append(
+                        (c.crn, c.term_id, ref.name, ref.email or None, 1 if ref.is_primary else 0)
+                    )
 
             if c.levels:
                 for level in c.levels.split(", "):
@@ -426,6 +503,11 @@ def bulk_save(
     cur.executemany(
         "INSERT OR IGNORE INTO instructors (name, email, first_seen) VALUES (?, ?, ?)",
         instructor_rows,
+    )
+    cur.executemany(
+        "INSERT OR IGNORE INTO section_instructors (crn, term_id, name, email, is_primary) "
+        "VALUES (?, ?, ?, ?, ?)",
+        section_instructor_rows,
     )
     cur.executemany(
         "INSERT OR IGNORE INTO levels (level, first_seen) VALUES (?, ?)",
@@ -516,6 +598,24 @@ def save_catalog(conn: sqlite3.Connection, entries: list[CatalogEntry]):
     conn.commit()
 
 
+def save_catalog_detail(conn: sqlite3.Connection, entries: list[CatalogDetail]):
+    """Bulk-upsert course-level catalog detail rows (G2)."""
+    if not entries:
+        return
+    conn.executemany(
+        "INSERT OR REPLACE INTO catalog_detail "
+        "(subject, course_number, term_id, levels, schedule_types, course_attributes, "
+        "prerequisites, corequisites, restrictions) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (e.subject, e.course_number, e.term_id, e.levels, e.schedule_types,
+             e.course_attributes, e.prerequisites, e.corequisites, e.restrictions)
+            for e in entries
+        ],
+    )
+    conn.commit()
+
+
 def save_details(
     conn: sqlite3.Connection,
     details: list[SectionDetail],
@@ -526,11 +626,13 @@ def save_details(
         conn.executemany(
             "INSERT OR IGNORE INTO section_details "
             "(crn, term_id, prerequisites, corequisites, restrictions, "
-            "waitlist_capacity, waitlist_actual, waitlist_remaining, fees) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "waitlist_capacity, waitlist_actual, waitlist_remaining, fees, "
+            "prerequisites_json, corequisites_json, restrictions_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (d.crn, d.term_id, d.prerequisites, d.corequisites, d.restrictions,
-                 d.waitlist_capacity, d.waitlist_actual, d.waitlist_remaining, d.fees)
+                 d.waitlist_capacity, d.waitlist_actual, d.waitlist_remaining, d.fees,
+                 d.prerequisites_json, d.corequisites_json, d.restrictions_json)
                 for d in details
             ],
         )
@@ -818,6 +920,50 @@ def _extract_meta(detail_td) -> dict:
     )
 
 
+def parse_instructors(cell) -> list[InstructorRef]:
+    """Parse every instructor from a schedule 'Instructors' cell (G1).
+
+    Banner lists instructors comma-separated; the primary carries a '(P)' marker
+    (an ``<abbr title="Primary">P</abbr>``) and each name is followed by its own
+    email link. We split on commas while walking the DOM in document order so a
+    given email stays attached to the right name even when some instructors have
+    no email link or no '(P)'.
+    """
+    segments: list[InstructorRef] = []
+    cur = {"name": "", "email": "", "primary": False}
+
+    def flush():
+        raw = cur["name"]
+        primary = cur["primary"] or bool(RE_PRIMARY.search(raw))
+        name = RE_WHITESPACE.sub(" ", RE_PAREN_P.sub("", raw)).strip().strip(",").strip()
+        if name and name.upper() != "TBA":
+            segments.append(InstructorRef(name=name, email=cur["email"], is_primary=primary))
+
+    def feed_text(text):
+        if not text:
+            return
+        parts = text.split(",")
+        cur["name"] += parts[0]
+        for extra in parts[1:]:           # each comma starts a new instructor
+            flush()
+            cur["name"], cur["email"], cur["primary"] = extra, "", False
+
+    feed_text(cell.text or "")
+    for child in cell:
+        tag = child.tag
+        if isinstance(tag, str):
+            if tag == "abbr" and (child.get("title") == "Primary"
+                                  or (child.text or "").strip() == "P"):
+                cur["primary"] = True
+            elif tag == "a":
+                cf = RE_CF_EMAIL.search(child.get("href", ""))
+                if cf:
+                    cur["email"] = decode_cf_email(cf.group(1))
+        feed_text(child.tail or "")
+    flush()
+    return segments
+
+
 def parse_courses(raw_html: str | bytes, term_id: str) -> list[Course]:
     """Parse courses from Banner HTML using lxml directly."""
     tree = lxml_html.fromstring(raw_html)
@@ -900,6 +1046,7 @@ def parse_courses(raw_html: str | bytes, term_id: str) -> list[Course]:
                     instructor_name=instructor_name,
                     instructor_email=instructor_email,
                     is_lab=(class_type == "Lab" or _sched_type == "Lab"),
+                    instructors=parse_instructors(cells[7]),
                 ))
         else:
             courses.append(Course(**base, is_lab="lab" in class_title.lower()))
@@ -992,6 +1139,260 @@ def parse_catalog_page(raw_html: str | bytes) -> list[CatalogEntry]:
 # ── HTML Parsing — Section Detail ─────────────────────────────────────────────
 
 
+def extract_label_sections(cell, targets: tuple[str, ...]):
+    """Single-pass walk of an OWA content cell.
+
+    Returns (items_by_label, links_by_label). ``items`` is an ordered list of
+    ``('t', text)`` / ``('el', element)`` per target ``fieldlabeltext`` section,
+    from which collapsed text, line structure (G4), and requirement tokens (G3)
+    are all derived. Any fieldlabeltext span or a ``<table>`` ends the current
+    section — matching the original parser's boundaries.
+    """
+    items: dict[str, list] = {t: [] for t in targets}
+    links: dict[str, list] = {t: [] for t in targets}
+    current: Optional[str] = None
+
+    def add_text(text):
+        if current is not None and text:
+            items[current].append(("t", text))
+
+    add_text(cell.text)
+    for child in cell:
+        tag = child.tag
+        if not isinstance(tag, str):  # comment / PI: no text_content, keep tail
+            add_text(child.tail)
+            continue
+        if tag == "span" and child.get("class") == "fieldlabeltext":
+            label = (child.text or "").strip().rstrip(":").strip()
+            current = label if label in targets else None
+            add_text(child.tail)
+            continue
+        if tag == "table":
+            current = None
+            add_text(child.tail)
+            continue
+        if current is not None:
+            items[current].append(("el", child))
+            if tag == "a":
+                links[current].append(child)
+            else:
+                links[current].extend(child.iter("a"))
+        add_text(child.tail)
+    return items, links
+
+
+def collapse_items(items: list) -> str:
+    """Whitespace-collapsed text of a section's items (matches legacy output)."""
+    parts = [v if k == "t" else v.text_content() for k, v in items]
+    return RE_WHITESPACE.sub(" ", "".join(parts)).strip()
+
+
+def section_lines(items: list) -> list[str]:
+    """Split a section's items into non-empty lines at ``<br>`` boundaries."""
+    buf = []
+    for kind, val in items:
+        if kind == "t":
+            buf.append(val)
+        elif val.tag == "br":
+            buf.append("\n")
+        else:
+            buf.append(val.text_content())
+    lines = [RE_WHITESPACE.sub(" ", ln).strip() for ln in "".join(buf).split("\n")]
+    return [ln for ln in lines if ln]
+
+
+RE_RESTR_HEADER = re.compile(r"^(must|may not)\s+be\s+enrolled\b.*:\s*$", re.IGNORECASE)
+RE_RESTR_TYPE = re.compile(r"following\s+(.+?):\s*$", re.IGNORECASE)
+
+
+def parse_restrictions(items: list) -> str:
+    """G4: parse restriction lines into typed include/exclude groups (JSON).
+
+    Banner emits a header per group ("Must be enrolled in one of the following
+    Levels:" / "May not be enrolled as the following Classifications:") followed
+    by the member values, one per line.
+    """
+    groups: list[dict] = []
+    cur: Optional[dict] = None
+    for ln in section_lines(items):
+        if RE_RESTR_HEADER.match(ln):
+            m = RE_RESTR_TYPE.search(ln)
+            cur = {
+                "include": ln[:4].lower() == "must",
+                "type": (m.group(1).strip() if m else ln.rsplit(":", 1)[0].strip()),
+                "values": [],
+            }
+            groups.append(cur)
+        elif cur is not None:
+            cur["values"].append(ln)
+    groups = [g for g in groups if g["values"]]
+    return json.dumps(groups, ensure_ascii=False) if groups else ""
+
+
+RE_LEVEL_QUALIFIER = re.compile(r"([A-Za-z][\w-]*)\s+level\b")
+RE_REQ_OP = re.compile(r"\(|\)|\b(?:and|or)\b", re.IGNORECASE)
+
+
+def _requirement_tokens(items: list) -> list[tuple]:
+    """Tokenize a prereq/coreq section into LEAF / AND / OR / LP / RP tokens."""
+    tokens: list[tuple] = []
+    for i, (kind, val) in enumerate(items):
+        if kind == "el" and isinstance(val.tag, str) and val.tag == "a":
+            parts = val.text_content().split()
+            if len(parts) < 2:
+                continue
+            level = ""
+            if i > 0 and items[i - 1][0] == "t":
+                lm = RE_LEVEL_QUALIFIER.findall(items[i - 1][1])
+                if lm:
+                    level = lm[-1]
+            tail = val.tail or ""
+            gm = RE_MIN_GRADE.search(tail)
+            tokens.append(("LEAF", {
+                "type": "course",
+                "subject": parts[0],
+                "course_number": parts[1],
+                "min_grade": gm.group(1) if gm else "",
+                "level": level,
+                "concurrent": "concurrent" in tail.lower(),
+            }))
+        elif kind == "t":
+            for mt in RE_REQ_OP.finditer(val):
+                s = mt.group(0)
+                tokens.append(({"(": "LP", ")": "RP"}.get(s, s.upper()), None))
+    return tokens
+
+
+def _merge(op: str, *nodes) -> list:
+    """Flatten same-operator children so chains become a single n-ary node."""
+    out: list = []
+    for node in nodes:
+        if isinstance(node, dict) and node.get("type") == op:
+            out.extend(node["operands"])
+        else:
+            out.append(node)
+    return out
+
+
+def requirement_tree(items: list):
+    """G3: build a boolean expression tree from a prereq/coreq section.
+
+    AND binds tighter than OR; parentheses group. Returns a nested dict
+    (``{"type":"and"|"or","operands":[...]}`` or a single course leaf), or None.
+    """
+    prec = {"AND": 2, "OR": 1}
+    rpn: list[tuple] = []
+    ops: list[str] = []
+    for typ, payload in _requirement_tokens(items):
+        if typ == "LEAF":
+            rpn.append(("LEAF", payload))
+        elif typ in ("AND", "OR"):
+            while ops and ops[-1] in prec and prec[ops[-1]] >= prec[typ]:
+                rpn.append((ops.pop(), None))
+            ops.append(typ)
+        elif typ == "LP":
+            ops.append("LP")
+        elif typ == "RP":
+            while ops and ops[-1] != "LP":
+                rpn.append((ops.pop(), None))
+            if ops and ops[-1] == "LP":
+                ops.pop()
+    while ops:
+        if ops[-1] in prec:
+            rpn.append((ops.pop(), None))
+        else:
+            ops.pop()
+
+    stack: list = []
+    for typ, payload in rpn:
+        if typ == "LEAF":
+            stack.append(payload)
+        elif len(stack) >= 2:
+            b, a = stack.pop(), stack.pop()
+            stack.append({"type": typ.lower(), "operands": _merge(typ.lower(), a, b)})
+    if not stack:
+        return None
+    if len(stack) == 1:
+        return stack[0]
+    return {"type": "and", "operands": stack}  # bare leaves with no operator
+
+
+def requirement_json(items: list) -> str:
+    tree = requirement_tree(items)
+    return json.dumps(tree, ensure_ascii=False) if tree else ""
+
+
+RE_CD_LEVELS = re.compile(
+    r"Levels:\s*(.+?)\s*(?:Schedule Types:|Course Attributes:|Restrictions:|Prerequisites:|$)",
+    re.S,
+)
+RE_CD_SCHED = re.compile(
+    r"Schedule Types:\s*(.+?)\s*(?:Course Attributes:|Grade Modes?:|Restrictions:|Prerequisites:|$)",
+    re.S,
+)
+RE_CD_DEPT_TAIL = re.compile(r"\s*[\w/&.\- ]+Department\s*$")
+RE_CD_BOILER = re.compile(r"you are following\.", re.I)
+
+
+def parse_catalog_detail(
+    raw_html: str | bytes, subject: str, course_number: str, term_id: str = "",
+) -> Optional[CatalogDetail]:
+    """Parse bwckctlg.p_disp_course_detail for course-level data (G2).
+
+    Returns None for a course-not-found page (which only carries the bottom
+    "Return to Previous" links cell).
+    """
+    tree = lxml_html.fromstring(raw_html)
+    cell = None
+    for c in tree.xpath('//td[@class="ntdefault"]'):
+        if c.xpath('.//span[@class="fieldlabeltext"]') or "Credit hours" in c.text_content():
+            cell = c
+            break
+    if cell is None:
+        return None
+
+    full = RE_WHITESPACE.sub(" ", cell.text_content())
+
+    department = ""
+    for t in cell.itertext():
+        s = t.strip()
+        if s.endswith("Department"):
+            department = s
+            break
+
+    m = RE_CD_LEVELS.search(full)
+    levels = m.group(1).strip() if m else ""
+    m = RE_CD_SCHED.search(full)
+    sched = m.group(1).strip() if m else ""
+    if department and department in sched:
+        sched = sched.replace(department, "").strip()
+    sched = RE_CD_DEPT_TAIL.sub("", sched).strip()
+
+    attrs = ""
+    am = re.search(r"Course Attributes:(.*)", full, re.S)
+    if am:
+        block = am.group(1)
+        b = RE_CD_BOILER.search(block)
+        if b:
+            block = block[b.end():]
+        for stop in ("Restrictions:", "Prerequisites:", "Corequisites:"):
+            j = block.find(stop)
+            if j >= 0:
+                block = block[:j]
+        attrs = RE_WHITESPACE.sub(" ", block).strip()
+
+    items, _ = extract_label_sections(
+        cell, ("Prerequisites", "Corequisites", "Restrictions")
+    )
+    return CatalogDetail(
+        subject=subject, course_number=course_number, term_id=term_id,
+        levels=levels, schedule_types=sched, course_attributes=attrs,
+        prerequisites=collapse_items(items["Prerequisites"]),
+        corequisites=collapse_items(items["Corequisites"]),
+        restrictions=collapse_items(items["Restrictions"]),
+    )
+
+
 def parse_detail_page(
     raw_html: str | bytes, crn: str, term_id: str,
 ) -> tuple[SectionDetail, list[CourseDependency]]:
@@ -1042,45 +1443,10 @@ def parse_detail_page(
                     if desc:
                         fees_list.append({"description": desc, "amount": amt})
 
-    # ── Parse text sections + dependency links in a single lxml pass ──
-    # Walk the cell's direct children in document order, tracking which labelled
-    # section we're inside. A fieldlabeltext span or a <table> ends the current
-    # section (matching the old regex's boundaries, but without serializing the
-    # element back to HTML and re-parsing fragments).
-    targets = ("Prerequisites", "Corequisites", "Restrictions")
-    text_parts: dict[str, list[str]] = {t: [] for t in targets}
-    section_links: dict[str, list] = {t: [] for t in targets}
-    current: Optional[str] = None
-
-    def collect(text):
-        if current is not None and text:
-            text_parts[current].append(text)
-
-    collect(main_td.text)
-    for child in main_td:
-        tag = child.tag
-        if not isinstance(tag, str):  # comment / PI: no text_content, keep tail
-            collect(child.tail)
-            continue
-        if tag == "span" and child.get("class") == "fieldlabeltext":
-            label = (child.text or "").strip().rstrip(":").strip()
-            current = label if label in targets else None
-        elif tag == "table":
-            current = None
-        elif current is not None:
-            text_parts[current].append(child.text_content())
-            if tag == "a":
-                section_links[current].append(child)
-            else:
-                section_links[current].extend(child.iter("a"))
-        collect(child.tail)
-
-    def section_text(label: str) -> str:
-        return RE_WHITESPACE.sub(" ", "".join(text_parts[label])).strip()
-
-    prerequisites = section_text("Prerequisites")
-    corequisites = section_text("Corequisites")
-    restrictions = section_text("Restrictions")
+    # ── Parse labelled sections (prereqs, coreqs, restrictions) in one pass ──
+    items, links = extract_label_sections(
+        main_td, ("Prerequisites", "Corequisites", "Restrictions")
+    )
 
     # ── Structured dependency links (prerequisites first, then corequisites) ──
     deps: list[CourseDependency] = []
@@ -1088,7 +1454,7 @@ def parse_detail_page(
         ("Prerequisites", "prerequisite"),
         ("Corequisites", "corequisite"),
     ):
-        for a in section_links[label]:
+        for a in links[label]:
             parts = a.text_content().split()
             if len(parts) < 2:
                 continue
@@ -1101,13 +1467,16 @@ def parse_detail_page(
 
     detail = SectionDetail(
         crn=crn, term_id=term_id,
-        prerequisites=prerequisites,
-        corequisites=corequisites,
-        restrictions=restrictions,
+        prerequisites=collapse_items(items["Prerequisites"]),
+        corequisites=collapse_items(items["Corequisites"]),
+        restrictions=collapse_items(items["Restrictions"]),
         waitlist_capacity=waitlist_cap,
         waitlist_actual=waitlist_act,
         waitlist_remaining=waitlist_rem,
         fees=json.dumps(fees_list) if fees_list else "",
+        prerequisites_json=requirement_json(items["Prerequisites"]),
+        corequisites_json=requirement_json(items["Corequisites"]),
+        restrictions_json=parse_restrictions(items["Restrictions"]),
     )
 
     return detail, deps
@@ -1344,7 +1713,33 @@ async def run(args: argparse.Namespace):
             )
             crn_term_list = sorted(crn_terms - existing_details)
 
-        if not subj_term_list and not crn_term_list:
+        # Catalog detail: one fetch per unique (subject, course_number), using the
+        # most recent term it was offered (course-level data is term-stable).
+        cd_list: list[tuple[str, str, str]] = []
+        if run_catalog:
+            course_term: dict[tuple[str, str], str] = {}
+            for semester, courses in results:
+                for c in courses:
+                    k = (c.subject, c.course_number)
+                    if k not in course_term or semester.term_id > course_term[k]:
+                        course_term[k] = semester.term_id
+            for subj, num, mx in conn.execute(
+                "SELECT subject, course_number, MAX(term_id) FROM courses "
+                "GROUP BY subject, course_number"
+            ):
+                k = (subj, num)
+                if k not in course_term or (mx or "") > course_term[k]:
+                    course_term[k] = mx
+            if args.resume:
+                done = set(conn.execute(
+                    "SELECT subject, course_number FROM catalog_detail"
+                ).fetchall())
+                for k in list(course_term):
+                    if k in done:
+                        del course_term[k]
+            cd_list = sorted((s, n, t) for (s, n), t in course_term.items())
+
+        if not subj_term_list and not crn_term_list and not cd_list:
             console.print("[bold]Phase 4+5:[/] Catalog and details already complete.")
         else:
             # GET endpoints start 429-ing above ~10 workers after Phase 3, so cap
@@ -1402,6 +1797,59 @@ async def run(args: argparse.Namespace):
                 console.print(
                     f"  Catalog: [cyan]{cat_count:,}[/] entries"
                     + (f", [yellow]{cat_errors}[/] errors" if cat_errors else "")
+                )
+
+            # ── Phase 4b: Catalog course detail (attributes, course-level prereqs) ──
+            if cd_list:
+                console.print(f"[bold]Phase 4b:[/] Fetching {len(cd_list):,} course detail pages ({detail_workers}w)...")
+                cd_entries: list[CatalogDetail] = []
+                cd_errors = 0
+
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[bold blue]{task.description}"),
+                    BarColumn(),
+                    MofNCompleteColumn(),
+                    TextColumn("•"),
+                    TimeElapsedColumn(),
+                    TextColumn("•"),
+                    TimeRemainingColumn(),
+                    console=console,
+                ) as progress:
+                    cd_task = progress.add_task("Catalog detail", total=len(cd_list))
+
+                    async def fetch_cd(subj: str, num: str, term_id: str):
+                        nonlocal cd_errors
+                        async with get_limiter.slot():
+                            if args.delay > 0:
+                                await asyncio.sleep(args.delay)
+                            try:
+                                resp = await request_with_retry(
+                                    client, "GET", ENDPOINTS["catalog_detail"],
+                                    params={
+                                        "cat_term_in": term_id,
+                                        "subj_code_in": subj,
+                                        "crse_numb_in": num,
+                                    },
+                                    limiter=get_limiter,
+                                )
+                                cd = await loop.run_in_executor(
+                                    parse_pool, parse_catalog_detail,
+                                    resp.content, subj, num, term_id,
+                                )
+                                if cd is not None:
+                                    cd_entries.append(cd)
+                            except Exception:
+                                cd_errors += 1
+                            progress.update(cd_task, advance=1)
+
+                    await asyncio.gather(*(fetch_cd(s, n, t) for s, n, t in cd_list))
+
+                save_catalog_detail(conn, cd_entries)
+                cd_count = conn.execute("SELECT COUNT(*) FROM catalog_detail").fetchone()[0]
+                console.print(
+                    f"  Catalog detail: [cyan]{cd_count:,}[/] courses"
+                    + (f", [yellow]{cd_errors}[/] errors" if cd_errors else "")
                 )
 
             # ── Phase 5: Section Details ──
@@ -1477,7 +1925,9 @@ async def run(args: argparse.Namespace):
             "subjects": conn.execute("SELECT COUNT(*) FROM subjects").fetchone()[0],
             "levels": conn.execute("SELECT COUNT(*) FROM levels").fetchone()[0],
             "attributes": conn.execute("SELECT COUNT(*) FROM attributes").fetchone()[0],
+            "section_instructors": conn.execute("SELECT COUNT(*) FROM section_instructors").fetchone()[0],
             "catalog": conn.execute("SELECT COUNT(*) FROM catalog").fetchone()[0],
+            "catalog_detail": conn.execute("SELECT COUNT(*) FROM catalog_detail").fetchone()[0],
             "details": conn.execute("SELECT COUNT(*) FROM section_details").fetchone()[0],
             "dependencies": conn.execute("SELECT COUNT(*) FROM course_dependencies").fetchone()[0],
         }
