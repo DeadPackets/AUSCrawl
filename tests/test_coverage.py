@@ -232,3 +232,67 @@ def test_save_catalog_detail_round_trip():
     assert row[0] == "PSY Major_Elective, Natural Sciences Requirement"
     assert "BIO 101L" in row[1]
     conn.close()
+
+
+# ── G3 backfill: text parser must match the HTML parser on the same content ──
+
+
+def _both_trees(fixture, crn, term):
+    detail, _ = crawl.parse_detail_page(read_fixture(fixture), crn, term)
+    from_html = json.loads(detail.prerequisites_json)
+    from_text = json.loads(crawl.requirement_json_from_text(detail.prerequisites))
+    return from_html, from_text
+
+
+def test_text_backfill_matches_html_parser_or():
+    html, text = _both_trees("detail_11509.html", "11509", "202710")
+    assert text == html
+
+
+def test_text_backfill_matches_html_parser_complex_grouping():
+    html, text = _both_trees("detail_complex_10001.html", "10001", "201810")
+    assert text == html
+
+
+def test_text_backfill_single_leaf():
+    html, text = _both_trees("detail_11179.html", "11179", "202710")
+    assert text == html
+
+
+def test_text_backfill_ignores_non_course_prereqs():
+    # Placement-test prereqs have no course code -> no tree, like the HTML parser.
+    assert crawl.requirement_json_from_text("Bridge English Placement Test 1.1") == ""
+
+
+# ── migration + backfill on a pre-G3 database ───────────────────────────────
+
+
+def test_migration_adds_json_columns_and_backfills():
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    # Simulate an OLD section_details table without the *_json columns.
+    conn.execute(
+        "CREATE TABLE section_details (id INTEGER PRIMARY KEY, crn TEXT, term_id TEXT, "
+        "prerequisites TEXT DEFAULT '', corequisites TEXT DEFAULT '', restrictions TEXT DEFAULT '', "
+        "waitlist_capacity INT, waitlist_actual INT, waitlist_remaining INT, fees TEXT, "
+        "UNIQUE(crn, term_id))"
+    )
+    conn.execute(
+        "INSERT INTO section_details (crn, term_id, prerequisites) VALUES "
+        "('99999','201810','Undergraduate level MTH 101 Minimum Grade of C')"
+    )
+    conn.commit()
+    crawl.migrate_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(section_details)")}
+    assert {"prerequisites_json", "corequisites_json", "restrictions_json"} <= cols
+
+    n = crawl.backfill_requirement_json(conn)
+    assert n == 1
+    tree = json.loads(conn.execute(
+        "SELECT prerequisites_json FROM section_details WHERE crn='99999'"
+    ).fetchone()[0])
+    assert tree == {
+        "type": "course", "subject": "MTH", "course_number": "101",
+        "min_grade": "C", "level": "Undergraduate", "concurrent": False,
+    }
+    conn.close()

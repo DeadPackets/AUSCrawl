@@ -1,69 +1,49 @@
-"""TDD for the adaptive concurrency limiter (finding #7)."""
+"""TDD for the global rate limiter (token-bucket + AIMD)."""
 
 import asyncio
 
 import crawl
 
 
-def test_throttle_multiplicatively_decreases_to_floor():
-    lim = crawl.AdaptiveLimiter(start=10, max_limit=10, min_limit=2, decrease=0.5)
-    asyncio.run(lim.record_throttle())
-    assert lim.limit == 5.0
-    asyncio.run(lim.record_throttle())
-    assert lim.limit == 2.5
-    asyncio.run(lim.record_throttle())
-    assert lim.limit == 2.0  # floored at min_limit
+def test_reserve_spaces_requests_by_one_over_rate():
+    rl = crawl.RateLimiter(rate=10)  # 0.1s between grants
+    assert rl._reserve(0.0) == 0.0
+    assert abs(rl._reserve(0.0) - 0.1) < 1e-9
+    assert abs(rl._reserve(0.0) - 0.2) < 1e-9
 
 
-def test_success_increases_by_one_step_per_window_toward_ceiling():
-    # AIMD: each success adds increase/limit, so it takes ~`limit` successes to
-    # gain one full step (gentle recovery that won't snap back to the ceiling).
-    lim = crawl.AdaptiveLimiter(start=2, max_limit=4, min_limit=1, increase=1.0)
-    asyncio.run(lim.record_success())
-    assert lim.limit == 2.5            # 2 + 1/2
-    asyncio.run(lim.record_success())
-    assert round(lim.limit, 4) == 2.9  # 2.5 + 1/2.5
-    for _ in range(50):
-        asyncio.run(lim.record_success())
-    assert lim.limit == 4.0            # eventually capped at max_limit
+def test_reserve_no_wait_when_caller_is_already_late():
+    rl = crawl.RateLimiter(rate=10)
+    rl._reserve(0.0)                      # next free at 0.1
+    assert rl._reserve(5.0) == 0.0        # caller arrived well after
 
 
-def test_slot_never_exceeds_current_limit():
+def test_record_throttle_multiplicatively_decreases_to_floor():
+    rl = crawl.RateLimiter(rate=20, min_rate=4, decrease=0.5)
+    rl.record_throttle()
+    assert rl.rate == 10.0
+    rl.record_throttle()
+    assert rl.rate == 5.0
+    rl.record_throttle()
+    assert rl.rate == 4.0  # floored at min_rate
+
+
+def test_record_success_additively_increases_to_ceiling():
+    rl = crawl.RateLimiter(rate=4, max_rate=6, increase=1.0)
+    rl.record_success()
+    assert rl.rate == 4.25            # 4 + 1/4
+    for _ in range(100):
+        rl.record_success()
+    assert rl.rate == 6.0             # capped at max_rate
+
+
+def test_acquire_completes_and_paces_in_order():
     async def scenario():
-        lim = crawl.AdaptiveLimiter(start=2, max_limit=2, min_limit=1)
-        state = {"active": 0, "peak": 0}
-
-        async def worker():
-            async with lim.slot():
-                state["active"] += 1
-                state["peak"] = max(state["peak"], state["active"])
-                await asyncio.sleep(0.01)
-                state["active"] -= 1
-
-        await asyncio.gather(*(worker() for _ in range(8)))
-        return state["peak"]
-
-    assert asyncio.run(scenario()) <= 2
-
-
-def test_raising_limit_wakes_a_waiter():
-    async def scenario():
-        lim = crawl.AdaptiveLimiter(start=1, max_limit=2, min_limit=1, increase=1.0)
+        rl = crawl.RateLimiter(rate=1000)  # fast; just exercise the await path
         order = []
-
-        async def worker(i):
-            async with lim.slot():
-                order.append(i)
-                await asyncio.sleep(0.02)
-
-        # Two workers, limit starts at 1. Bump limit after a beat so the second
-        # can proceed concurrently rather than strictly serially.
-        async def bump():
-            await asyncio.sleep(0.005)
-            await lim.record_success()
-
-        await asyncio.gather(worker(1), worker(2), bump())
+        for i in range(4):
+            await rl.acquire()
+            order.append(i)
         return order
 
-    # Both workers run; we only assert no deadlock and both executed.
-    assert sorted(asyncio.run(scenario())) == [1, 2]
+    assert asyncio.run(scenario()) == [0, 1, 2, 3]

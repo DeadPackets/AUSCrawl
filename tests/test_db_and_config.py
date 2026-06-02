@@ -136,9 +136,12 @@ def test_parse_pool_size_bounds():
     assert crawl.parse_pool_size(64) == 16    # cap
 
 
-# ── default delay: non-zero (gentle) but small (fast) ───────────────────────
+# ── default GET rate: fast but safely under the ~30 req/s 429 threshold ─────
 
 
-def test_default_delay_is_small_and_positive():
-    # Guards the tuned default: smooths the request burst without crawling slowly.
-    assert 0 < crawl.DEFAULT_DELAY <= 0.5
+def test_default_get_rate_is_safe_and_bounded():
+    # Pacing is governed by the rate limiter now; the AIMD ceiling must stay
+    # comfortably under the observed ~30 req/s where Banner starts 429-ing.
+    assert 5 <= crawl.DEFAULT_RATE <= crawl.GET_MAX_RATE
+    assert crawl.GET_MAX_RATE <= 30
+    assert crawl.GET_CONCURRENCY >= crawl.GET_MAX_RATE  # enough workers to saturate

@@ -8,7 +8,6 @@ and stores it in an SQLite database for analysis.
 import argparse
 import asyncio
 import concurrent.futures
-import contextlib
 import json
 import logging
 import os
@@ -47,17 +46,20 @@ ENDPOINTS = {
     "detail": f"{BASE_URL}/bwckschd.p_disp_detail_sched",
 }
 DEFAULT_WORKERS = 50
-# Per-request, per-worker pause. Paces the GET endpoints so they effectively
-# stop throttling (0 × 429 in practice, vs ~48 at no delay), trading ~8 min on a
-# full crawl to stay a good citizen. Lower it (e.g. 0.1) or set 0 to go faster
-# at the cost of more 429s — those are still retried, just noisier.
-DEFAULT_DELAY = 0.25
+DEFAULT_DELAY = 0.0        # extra per-request pause; pacing is handled by --rate
+# Global request rate for the GET endpoints (req/s). Pacing the aggregate rate —
+# not the worker count — is what keeps us under the server's ~30 req/s 429
+# threshold, so we can run many workers to hide latency. AIMD probes between
+# DEFAULT_RATE and GET_MAX_RATE and backs off on 429s.
+DEFAULT_RATE = 18.0
+GET_MAX_RATE = 25.0
+GET_MIN_RATE = 3.0
+GET_CONCURRENCY = 30       # in-flight GET cap (enough to saturate the rate)
 MAX_RETRIES = 5
 RETRY_BASE = 2.0            # backoff base for all retries
 DETAIL_BATCH_SIZE = 5000   # save details every N for resilience
 CATALOG_SAMPLE_COUNT = 6   # number of evenly-spaced terms to sample for catalog
 WAF_SCAN_LIMIT = 65536     # bytes of a response to scan for the WAF marker
-GET_WORKER_CAP = 10        # GET endpoints start 429-ing above this
 
 # Status codes worth retrying: rate limits + transient server errors.
 # Other 4xx (400/401/404/410/422 …) are permanent — retrying just wastes time.
@@ -405,8 +407,22 @@ def init_db(db_path: str, force: bool = False) -> sqlite3.Connection:
         conn.commit()
 
     conn.executescript(SCHEMA)
+    migrate_schema(conn)
     conn.commit()
     return conn
+
+
+def migrate_schema(conn: sqlite3.Connection):
+    """Add columns introduced after a DB was first created (idempotent).
+
+    `CREATE TABLE IF NOT EXISTS` makes the new tables, but won't add columns to a
+    pre-existing `section_details`, so an older snapshot is brought up to date by
+    ALTERing in the structured-JSON columns.
+    """
+    have = {r[1] for r in conn.execute("PRAGMA table_info(section_details)")}
+    for col in ("prerequisites_json", "corequisites_json", "restrictions_json"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE section_details ADD COLUMN {col} TEXT DEFAULT ''")
 
 
 def bulk_save(
@@ -654,64 +670,54 @@ def save_details(
 FORM_CONTENT_TYPE = {"content-type": "application/x-www-form-urlencoded"}
 
 
-class AdaptiveLimiter:
-    """AIMD concurrency limiter.
+class RateLimiter:
+    """Global request-rate limiter with AIMD feedback.
 
-    Gates concurrent work to a dynamic `limit`. On a throttle signal (429/503/
-    WAF block) the limit is multiplicatively decreased; on success it is
-    additively increased back toward `max_limit`. Unlike a fixed semaphore,
-    this backs the whole fleet off when the server starts pushing back instead
-    of letting the other workers keep hammering at full rate.
+    Paces request *starts* to at most ``rate`` per second, independent of how
+    many workers are in flight. This decouples rate from concurrency: we can run
+    many concurrent workers (to hide per-request latency) while keeping the
+    aggregate rate safely under the server's 429 threshold — strictly safer than
+    a per-worker delay, which bursts. A 429/503/WAF cuts the rate multiplicatively
+    (AIMD decrease); sustained success raises it additively (one step per window)
+    back toward ``max_rate``, so it settles just under the sustainable rate.
     """
 
     def __init__(
         self,
-        start: float,
-        max_limit: float,
-        min_limit: float = 1.0,
-        increase: float = 1.0,
+        rate: float,
+        max_rate: Optional[float] = None,
+        min_rate: float = 2.0,
         decrease: float = 0.5,
+        increase: float = 1.0,
+        now: Callable[[], float] = time.monotonic,
     ):
-        self.limit = float(start)
-        self.max_limit = float(max_limit)
-        self.min_limit = float(min_limit)
-        self.increase = increase
+        self.rate = float(rate)
+        self.max_rate = float(max_rate if max_rate is not None else rate)
+        self.min_rate = float(min_rate)
         self.decrease = decrease
-        self.active = 0
-        self._cond = asyncio.Condition()
+        self.increase = increase
+        self._now = now
+        self._next_free: Optional[float] = None
+        self._lock = asyncio.Lock()
+
+    def _reserve(self, now: float) -> float:
+        """Claim the next slot; return seconds to wait before issuing."""
+        start = now if self._next_free is None else max(self._next_free, now)
+        self._next_free = start + 1.0 / self.rate
+        return max(0.0, start - now)
 
     async def acquire(self):
-        async with self._cond:
-            while self.active >= self.limit:
-                await self._cond.wait()
-            self.active += 1
+        async with self._lock:
+            wait = self._reserve(self._now())
+        if wait > 0:  # sleep outside the lock so waiters pace in parallel
+            await asyncio.sleep(wait)
 
-    async def release(self):
-        async with self._cond:
-            self.active -= 1
-            self._cond.notify(1)
+    def record_throttle(self):
+        self.rate = max(self.min_rate, self.rate * self.decrease)
 
-    async def record_success(self):
-        async with self._cond:
-            if self.limit < self.max_limit:
-                # Additive increase of one step per *window* of `limit` successes
-                # (textbook AIMD). Recovering by a full step on every single
-                # success would snap straight back to the ceiling and re-trigger
-                # the rate limit; this settles near the sustainable rate instead.
-                self.limit = min(self.max_limit, self.limit + self.increase / self.limit)
-                self._cond.notify(1)  # a freshly opened slot may be claimable
-
-    async def record_throttle(self):
-        async with self._cond:
-            self.limit = max(self.min_limit, self.limit * self.decrease)
-
-    @contextlib.asynccontextmanager
-    async def slot(self):
-        await self.acquire()
-        try:
-            yield
-        finally:
-            await self.release()
+    def record_success(self):
+        if self.rate < self.max_rate:
+            self.rate = min(self.max_rate, self.rate + self.increase / self.rate)
 
 
 def make_client(workers: int) -> httpx.AsyncClient:
@@ -738,9 +744,9 @@ async def request_with_retry(
     url: str,
     form: list[tuple[str, str]] | dict[str, str] | None = None,
     params: dict[str, str] | None = None,
-    limiter: Optional[AdaptiveLimiter] = None,
+    rate: Optional[RateLimiter] = None,
 ) -> httpx.Response:
-    """HTTP request with jittered retry, WAF detection, and adaptive feedback."""
+    """HTTP request with global rate pacing, jittered retry, and WAF detection."""
     kwargs: dict = {}
     if form is not None:
         kwargs["content"] = urlencode(form)
@@ -750,13 +756,15 @@ async def request_with_retry(
 
     for attempt in range(1, MAX_RETRIES + 1):
         last = attempt == MAX_RETRIES
+        if rate:                      # pace every attempt, including retries
+            await rate.acquire()
         try:
             resp = await client.request(method, url, **kwargs)
             resp.raise_for_status()
 
             if is_waf_block(resp.content):
-                if limiter:
-                    await limiter.record_throttle()
+                if rate:
+                    rate.record_throttle()
                 if last:
                     break
                 wait = backoff_delay(attempt)
@@ -764,13 +772,13 @@ async def request_with_retry(
                 await asyncio.sleep(wait)
                 continue
 
-            if limiter:
-                await limiter.record_success()
+            if rate:
+                rate.record_success()
             return resp
         except httpx.HTTPStatusError as e:
             code = e.response.status_code
-            if limiter and code in THROTTLE_STATUS:
-                await limiter.record_throttle()
+            if rate and code in THROTTLE_STATUS:
+                rate.record_throttle()
             if not should_retry_status(code):
                 raise
             if last:
@@ -1274,8 +1282,8 @@ def _merge(op: str, *nodes) -> list:
     return out
 
 
-def requirement_tree(items: list):
-    """G3: build a boolean expression tree from a prereq/coreq section.
+def _tree_from_tokens(tokens: list[tuple]):
+    """Shunting-yard: LEAF/AND/OR/LP/RP tokens -> nested expression tree.
 
     AND binds tighter than OR; parentheses group. Returns a nested dict
     (``{"type":"and"|"or","operands":[...]}`` or a single course leaf), or None.
@@ -1283,7 +1291,7 @@ def requirement_tree(items: list):
     prec = {"AND": 2, "OR": 1}
     rpn: list[tuple] = []
     ops: list[str] = []
-    for typ, payload in _requirement_tokens(items):
+    for typ, payload in tokens:
         if typ == "LEAF":
             rpn.append(("LEAF", payload))
         elif typ in ("AND", "OR"):
@@ -1317,9 +1325,81 @@ def requirement_tree(items: list):
     return {"type": "and", "operands": stack}  # bare leaves with no operator
 
 
+def requirement_tree(items: list):
+    """G3: boolean prereq/coreq tree from parsed HTML section items."""
+    return _tree_from_tokens(_requirement_tokens(items))
+
+
 def requirement_json(items: list) -> str:
     tree = requirement_tree(items)
     return json.dumps(tree, ensure_ascii=False) if tree else ""
+
+
+# A course requirement leaf in *collapsed text* (used to backfill the tree from
+# already-stored prerequisites text — no HTML, so no <a> tags to key on):
+#   "<Level> level <SUBJ> <NUM> Minimum Grade of <G> (pre-req concurrent)"
+RE_REQ_TOKEN_TEXT = re.compile(
+    r"(?P<course>(?:(?P<level>[A-Z][\w-]*)\s+level\s+)?"
+    r"(?P<subj>[A-Z]{2,5})\s+(?P<num>[0-9][\w-]*)"
+    r"(?:\s+Minimum Grade of\s+(?P<grade>[A-Z][+-]?))?"
+    r"(?P<conc>\s*\(\s*pre-req concurrent\s*\))?)"
+    r"|(?P<lp>\()|(?P<rp>\))|(?P<op>\b(?:and|or)\b)"
+)
+
+
+def _requirement_tokens_from_text(text: str) -> list[tuple]:
+    """Tokenize a collapsed prereq/coreq *text* string into the same tokens."""
+    tokens: list[tuple] = []
+    for m in RE_REQ_TOKEN_TEXT.finditer(text):
+        if m.group("op"):
+            tokens.append((m.group("op").upper(), None))
+        elif m.group("lp"):
+            tokens.append(("LP", None))
+        elif m.group("rp"):
+            tokens.append(("RP", None))
+        elif m.group("subj"):
+            tokens.append(("LEAF", {
+                "type": "course",
+                "subject": m.group("subj"),
+                "course_number": m.group("num"),
+                "min_grade": m.group("grade") or "",
+                "level": m.group("level") or "",
+                "concurrent": bool(m.group("conc")),
+            }))
+    return tokens
+
+
+def requirement_json_from_text(text: str) -> str:
+    """Backfill: build the boolean tree JSON from stored collapsed prereq text."""
+    if not text:
+        return ""
+    tree = _tree_from_tokens(_requirement_tokens_from_text(text))
+    return json.dumps(tree, ensure_ascii=False) if tree else ""
+
+
+def backfill_requirement_json(conn: sqlite3.Connection) -> int:
+    """Populate prerequisites_json/corequisites_json for rows that have the text
+    but not yet the tree (e.g. historical rows from before G3). No network."""
+    rows = conn.execute(
+        "SELECT crn, term_id, prerequisites, corequisites FROM section_details "
+        "WHERE (prerequisites != '' AND IFNULL(prerequisites_json,'') = '') "
+        "   OR (corequisites != '' AND IFNULL(corequisites_json,'') = '')"
+    ).fetchall()
+    updates = []
+    for crn, term_id, prereq, coreq in rows:
+        updates.append((
+            requirement_json_from_text(prereq or ""),
+            requirement_json_from_text(coreq or ""),
+            crn, term_id,
+        ))
+    if updates:
+        conn.executemany(
+            "UPDATE section_details SET prerequisites_json = ?, corequisites_json = ? "
+            "WHERE crn = ? AND term_id = ?",
+            updates,
+        )
+        conn.commit()
+    return len(updates)
 
 
 RE_CD_LEVELS = re.compile(
@@ -1580,7 +1660,7 @@ async def run(args: argparse.Namespace):
 
         # ── Phase 3: Fire all course requests concurrently ──
         console.print(f"[bold]Phase 3:[/] Crawling {len(semesters)} semesters ({args.workers} workers)...")
-        course_limiter = AdaptiveLimiter(start=args.workers, max_limit=args.workers, min_limit=2)
+        course_sem = asyncio.Semaphore(args.workers)
         results: list[tuple[Semester, list[Course]]] = []
         errors: list[str] = []
 
@@ -1599,13 +1679,12 @@ async def run(args: argparse.Namespace):
 
             async def fetch_batch(semester: Semester, params_template: list) -> list[Course]:
                 """Fetch one batch of courses for a semester."""
-                async with course_limiter.slot():
+                async with course_sem:
                     if args.delay > 0:
                         await asyncio.sleep(args.delay)
                     params = [("term_in", semester.term_id)] + params_template[1:]
                     resp = await request_with_retry(
                         client, "POST", ENDPOINTS["courses"], form=params,
-                        limiter=course_limiter,
                     )
                     # Parse bytes in the thread pool so neither decoding nor
                     # parsing blocks the event loop.
@@ -1742,10 +1821,14 @@ async def run(args: argparse.Namespace):
         if not subj_term_list and not crn_term_list and not cd_list:
             console.print("[bold]Phase 4+5:[/] Catalog and details already complete.")
         else:
-            # GET endpoints start 429-ing above ~10 workers after Phase 3, so cap
-            # the ceiling there and let the limiter back off further if needed.
-            detail_workers = min(args.workers, GET_WORKER_CAP)
-            get_limiter = AdaptiveLimiter(start=detail_workers, max_limit=detail_workers, min_limit=1)
+            # GET endpoints are governed by a global rate limiter (req/s), not the
+            # worker count — so we run many workers to hide latency while AIMD keeps
+            # the aggregate rate under the server's 429 threshold.
+            detail_workers = min(args.workers, GET_CONCURRENCY)
+            get_sem = asyncio.Semaphore(detail_workers)
+            get_rate = RateLimiter(
+                args.rate, max_rate=max(args.rate, GET_MAX_RATE), min_rate=GET_MIN_RATE,
+            )
 
             # ── Phase 4: Catalog ──
             if subj_term_list:
@@ -1766,7 +1849,7 @@ async def run(args: argparse.Namespace):
 
                     async def fetch_cat(subj: str, term_id: str):
                         nonlocal cat_errors
-                        async with get_limiter.slot():
+                        async with get_sem:
                             if args.delay > 0:
                                 await asyncio.sleep(args.delay)
                             try:
@@ -1780,7 +1863,7 @@ async def run(args: argparse.Namespace):
                                         "sel_divs": "", "sel_dept": "",
                                         "sel_attr": "",
                                     },
-                                    limiter=get_limiter,
+                                    rate=get_rate,
                                 )
                                 entries = await loop.run_in_executor(
                                     parse_pool, parse_catalog_page, resp.content
@@ -1820,7 +1903,7 @@ async def run(args: argparse.Namespace):
 
                     async def fetch_cd(subj: str, num: str, term_id: str):
                         nonlocal cd_errors
-                        async with get_limiter.slot():
+                        async with get_sem:
                             if args.delay > 0:
                                 await asyncio.sleep(args.delay)
                             try:
@@ -1831,7 +1914,7 @@ async def run(args: argparse.Namespace):
                                         "subj_code_in": subj,
                                         "crse_numb_in": num,
                                     },
-                                    limiter=get_limiter,
+                                    rate=get_rate,
                                 )
                                 cd = await loop.run_in_executor(
                                     parse_pool, parse_catalog_detail,
@@ -1871,14 +1954,14 @@ async def run(args: argparse.Namespace):
 
                     async def fetch_det(c: str, t: str):
                         nonlocal det_errors
-                        async with get_limiter.slot():
+                        async with get_sem:
                             if args.delay > 0:
                                 await asyncio.sleep(args.delay)
                             try:
                                 resp = await request_with_retry(
                                     client, "GET", ENDPOINTS["detail"],
                                     params={"term_in": t, "crn_in": c},
-                                    limiter=get_limiter,
+                                    rate=get_rate,
                                 )
                                 detail, deps = await loop.run_in_executor(
                                     parse_pool, parse_detail_page, resp.content, c, t,
@@ -1914,6 +1997,12 @@ async def run(args: argparse.Namespace):
 
             t_extra = time.monotonic() - t_extra
             console.print(f"  Phase 4+5 time: {t_extra:.1f}s")
+
+        # ── Backfill structured prereq/coreq trees for any rows still missing
+        #    them (e.g. historical rows from before G3) — pure re-parse, no network.
+        backfilled = backfill_requirement_json(conn)
+        if backfilled:
+            console.print(f"[bold]Backfill:[/] structured prereq trees for [cyan]{backfilled:,}[/] section(s)")
 
         elapsed = time.monotonic() - t0
 
@@ -1963,8 +2052,14 @@ def main():
         help=f"Max concurrent requests (default: {DEFAULT_WORKERS})",
     )
     parser.add_argument(
+        "--rate", type=float, default=DEFAULT_RATE,
+        help=f"Target GET requests/sec (AIMD ceiling; default: {DEFAULT_RATE}). "
+             "Lower for extra safety, raise to go faster at the risk of 429s.",
+    )
+    parser.add_argument(
         "--delay", type=float, default=DEFAULT_DELAY,
-        help=f"Seconds to pause before each request, per worker (default: {DEFAULT_DELAY})",
+        help="Extra seconds to pause before each request (default: 0; pacing is "
+             "normally handled by --rate)",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
