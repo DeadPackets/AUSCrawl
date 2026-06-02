@@ -1,6 +1,6 @@
-# Database files (except the included snapshot)
+# Database files — distributed via GitHub Releases, never committed
 *.db
-!aus_courses.db
+*.db.gz
 *.db-wal
 *.db-shm
 

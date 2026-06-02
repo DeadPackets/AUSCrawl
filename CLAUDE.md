@@ -58,6 +58,6 @@ Cross-cutting design points that span multiple functions:
 
 See README.md for example queries and full table descriptions.
 
-**Note:** the committed `aus_courses.db` predates the G1–G4 schema additions — the new tables/columns only populate on a fresh crawl, so a DB refresh + re-commit is needed for the shipped snapshot to include them.
+**Refreshing the shipped DB** is incremental and fast (~5 min, not a full re-crawl): copy `aus_courses.db`, run `uv run python crawl.py -o <copy>` *without* `--resume` (so Phase 3 re-runs cheaply across all terms to repopulate `section_instructors`, while Phase 5 auto-skips the immutable details already stored). `init_db` migrates the older schema and `backfill_requirement_json` reconstructs historical prereq trees from stored text with no network. Then checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)` + `journal_mode=DELETE`) and swap the file in.
 
 The Banner endpoint reference (URLs, methods, WAF/rate-limit behavior) is documented in README.md under "Banner Technical Details" — consult it before touching the HTTP layer.

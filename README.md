@@ -8,11 +8,11 @@
     <img src="https://img.shields.io/badge/python-3.13+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.13+">
     <img src="https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite">
     <img src="https://img.shields.io/badge/HTTP%2F2-async-blue?style=flat-square" alt="HTTP/2 Async">
-    <img src="https://img.shields.io/badge/database-74%20MB-orange?style=flat-square" alt="Database 74 MB">
+    <img src="https://img.shields.io/badge/database-114%20MB-orange?style=flat-square" alt="Database 114 MB">
     <br/>
-    <img src="https://img.shields.io/badge/courses-73%2C418-green?style=flat-square" alt="73,418 courses">
-    <img src="https://img.shields.io/badge/semesters-98-green?style=flat-square" alt="98 semesters">
-    <img src="https://img.shields.io/badge/instructors-1%2C649-green?style=flat-square" alt="1,649 instructors">
+    <img src="https://img.shields.io/badge/courses-75%2C467-green?style=flat-square" alt="75,467 courses">
+    <img src="https://img.shields.io/badge/semesters-101-green?style=flat-square" alt="101 semesters">
+    <img src="https://img.shields.io/badge/instructors-1%2C987-green?style=flat-square" alt="1,987 instructors">
     <img src="https://img.shields.io/badge/made%20with-%E2%9D%A4-red?style=flat-square" alt="Made with love">
   </p>
 </p>
@@ -24,7 +24,7 @@
 
 ## What is this?
 
-AUSCrawl is a fast, async web crawler that scrapes [AUS Banner](https://banner.aus.edu/) for course data across **every semester since 2005** and stores it in an SQLite database. But more importantly, this repo ships a **ready-to-use database** so you never have to run the crawler yourself.
+AUSCrawl is a fast, async web crawler that scrapes [AUS Banner](https://banner.aus.edu/) for course data across **every semester since 2005** and stores it in an SQLite database. But more importantly, it ships a **ready-to-use database** (as a [release](https://github.com/DeadPackets/AUSCrawl/releases/latest) download) so you never have to run the crawler yourself.
 
 Written in Python. Single file. ~15 minutes for a full crawl of 74,000+ course sections, catalog descriptions, prerequisites, and more.
 
@@ -32,18 +32,20 @@ Written in Python. Single file. ~15 minutes for a full crawl of 74,000+ course s
 
 ## The Database
 
-This repository includes **`aus_courses.db`**, a complete SQLite database containing every course, instructor, prerequisite, and catalog description from AUS Banner since Fall 2005. Just download it and start building.
+Every [release](https://github.com/DeadPackets/AUSCrawl/releases/latest) ships **`aus_courses.db`** (gzipped, ~16 MB), a complete SQLite database containing every course, instructor, prerequisite, and catalog description from AUS Banner since Fall 2005. Just download it, `gunzip`, and start building. (It's distributed as a release asset rather than committed to the repo so clones stay small.)
 
 <table>
 <tr><th>Table</th><th>Records</th><th>Description</th></tr>
-<tr><td><code>courses</code></td><td><strong>73,418</strong></td><td>Every course section ever offered</td></tr>
-<tr><td><code>course_dependencies</code></td><td><strong>152,968</strong></td><td>Prerequisite/corequisite links with minimum grades</td></tr>
-<tr><td><code>section_details</code></td><td><strong>71,754</strong></td><td>Prerequisites, corequisites, restrictions, waitlist, fees</td></tr>
-<tr><td><code>catalog</code></td><td><strong>3,007</strong></td><td>Course descriptions, credit/lecture/lab hours</td></tr>
-<tr><td><code>instructors</code></td><td><strong>1,649</strong></td><td>All instructors with emails and first appearance</td></tr>
-<tr><td><code>semesters</code></td><td><strong>98</strong></td><td>Every term from Fall 2005 to the present</td></tr>
+<tr><td><code>courses</code></td><td><strong>75,467</strong></td><td>Every course section ever offered</td></tr>
+<tr><td><code>course_dependencies</code></td><td><strong>156,512</strong></td><td>Prerequisite/corequisite links with minimum grades</td></tr>
+<tr><td><code>section_details</code></td><td><strong>73,778</strong></td><td>Prerequisites, corequisites, restrictions, waitlist, fees (+ structured JSON)</td></tr>
+<tr><td><code>section_instructors</code></td><td><strong>72,476</strong></td><td>Every instructor per section (incl. co-taught), with primary flag</td></tr>
+<tr><td><code>catalog</code></td><td><strong>3,046</strong></td><td>Course descriptions, credit/lecture/lab hours</td></tr>
+<tr><td><code>catalog_detail</code></td><td><strong>3,532</strong></td><td>Course-level attributes (degree-requirement tags), schedule types, levels</td></tr>
+<tr><td><code>instructors</code></td><td><strong>1,987</strong></td><td>All instructors with emails and first appearance</td></tr>
+<tr><td><code>semesters</code></td><td><strong>101</strong></td><td>Every term from Fall 2005 to the present</td></tr>
 <tr><td><code>subjects</code></td><td><strong>98</strong></td><td>All subject codes (COE, ENG, MTH, etc.)</td></tr>
-<tr><td><code>attributes</code></td><td><strong>225</strong></td><td>Course attributes</td></tr>
+<tr><td><code>attributes</code></td><td><strong>231</strong></td><td>Course attributes</td></tr>
 <tr><td><code>levels</code></td><td><strong>9</strong></td><td>Academic levels (Undergraduate, Graduate, etc.)</td></tr>
 </table>
 
@@ -67,11 +69,12 @@ If you build something with this data, open an issue and let us know — we'd lo
 ### Getting Started
 
 ```bash
-# Clone the repo — the database is included
-git clone https://github.com/DeadPackets/AUSCrawl
-cd AUSCrawl
+# Download the latest database (compressed, ~16 MB) from Releases
+curl -L -o aus_courses.db.gz \
+  https://github.com/DeadPackets/AUSCrawl/releases/latest/download/aus_courses.db.gz
+gunzip aus_courses.db.gz
 
-# Open it directly with sqlite3
+# Open it with sqlite3
 sqlite3 aus_courses.db
 
 # Or use Python
@@ -120,10 +123,10 @@ GROUP BY d.subject, d.course_number;
 
 ## Database Schema
 
-The SQLite database contains 10 normalized tables with proper indexes:
+The SQLite database contains 13 normalized tables with proper indexes:
 
 **Core tables:**
-- `semesters` — term ID and name (e.g. `202620`, `Fall 2025`)
+- `semesters` — term ID and name (e.g. `202620`, `Spring 2026`)
 - `subjects` — subject codes and full names (e.g. `COE`, `Computer Engineering`)
 - `courses` — every course section with schedule, instructor, classroom, etc.
 - `instructors` — deduplicated instructor names and emails with `first_seen`
@@ -132,8 +135,10 @@ The SQLite database contains 10 normalized tables with proper indexes:
 
 **Extended tables:**
 - `catalog` — course descriptions, credit/lecture/lab hours, department
-- `section_details` — prerequisites, corequisites, restrictions, waitlist, fees per section
-- `course_dependencies` — structured prerequisite/corequisite links with minimum grade requirements
+- `catalog_detail` — course-level **attributes** (degree-requirement tags), schedule types, levels, and catalog-level prerequisites/corequisites/restrictions
+- `section_details` — prerequisites, corequisites, restrictions, waitlist, fees per section, plus structured `prerequisites_json` / `corequisites_json` (boolean AND/OR expression trees) and `restrictions_json` (typed include/exclude groups)
+- `section_instructors` — every instructor on each section, including co-taught ones, with an `is_primary` flag
+- `course_dependencies` — flat prerequisite/corequisite links with minimum grade requirements
 
 ---
 
@@ -147,9 +152,10 @@ AUS uses [Ellucian Banner](https://www.ellucian.com/solutions/ellucian-banner), 
 | `/axp3b21h/owa/bwckgens.p_proc_term_date` | POST | Subject listing — returns available subjects for a given term |
 | `/axp3b21h/owa/bwckschd.p_get_crse_unsec` | POST | Course search — returns HTML tables of all matching sections |
 | `/axp3b21h/owa/bwckctlg.p_display_courses` | GET | Course catalog — returns descriptions, credit hours, department |
+| `/axp3b21h/owa/bwckctlg.p_disp_course_detail` | GET | Course detail — returns course-level attributes, schedule types, prerequisites |
 | `/axp3b21h/owa/bwckschd.p_disp_detail_sched` | GET | Section detail — returns prerequisites, corequisites, restrictions, waitlist, fees |
 
-The course search endpoint accepts all subject codes in a single POST body (up to ~4,500 bytes before the WAF rejects it), returning a large HTML page with `<table class="datadisplaytable">` rows. Instructor emails are obfuscated using Cloudflare's email protection (XOR encoding with the first byte as key). The server enforces HTTP/2 stream limits (~10,000 streams per connection) and rate limits on the GET endpoints (~100 req/s before 429 responses begin).
+The course search endpoint accepts all subject codes in a single POST body (up to ~4,500 bytes before the WAF rejects it), returning a large HTML page with `<table class="datadisplaytable">` rows. Instructor emails are obfuscated using Cloudflare's email protection (XOR encoding with the first byte as key). The crawler paces the GET endpoints with a global token-bucket rate limiter (AIMD around ~18–25 req/s); in practice 429 responses begin around ~30 req/s, well below the documented stream limits (~10,000 HTTP/2 streams per connection). Actual enrollment/seat counts are **not** exposed by AUS Banner (only waitlist figures), even for completed terms.
 
 ---
 
