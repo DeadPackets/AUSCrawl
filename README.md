@@ -176,7 +176,7 @@ uv run python crawl.py [options]
 | `-o`, `--output` | SQLite output path (default: `aus_data.db`) |
 | `-t`, `--terms` | Only crawl specific term IDs (e.g. `202620 202510`) |
 | `-w`, `--workers` | Max concurrent requests (default: 50) |
-| `--delay` | Seconds between requests (default: 0) |
+| `--delay` | Seconds to pause before each request, per worker (default: 0.25; lower or set 0 to go faster with more 429s) |
 | `--latest` | Only crawl the most recent semester |
 | `--resume` | Skip semesters already in the database |
 | `--force` | Drop and recreate all tables |

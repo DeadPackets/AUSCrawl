@@ -8,13 +8,16 @@ and stores it in an SQLite database for analysis.
 import argparse
 import asyncio
 import concurrent.futures
+import contextlib
 import json
 import logging
+import os
+import random
 import re
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlencode
 
 import httpx
@@ -43,11 +46,23 @@ ENDPOINTS = {
     "detail": f"{BASE_URL}/bwckschd.p_disp_detail_sched",
 }
 DEFAULT_WORKERS = 50
-DEFAULT_DELAY = 0.0
+# Per-request, per-worker pause. Paces the GET endpoints so they effectively
+# stop throttling (0 × 429 in practice, vs ~48 at no delay), trading ~8 min on a
+# full crawl to stay a good citizen. Lower it (e.g. 0.1) or set 0 to go faster
+# at the cost of more 429s — those are still retried, just noisier.
+DEFAULT_DELAY = 0.25
 MAX_RETRIES = 5
 RETRY_BASE = 2.0            # backoff base for all retries
 DETAIL_BATCH_SIZE = 5000   # save details every N for resilience
 CATALOG_SAMPLE_COUNT = 6   # number of evenly-spaced terms to sample for catalog
+WAF_SCAN_LIMIT = 65536     # bytes of a response to scan for the WAF marker
+GET_WORKER_CAP = 10        # GET endpoints start 429-ing above this
+
+# Status codes worth retrying: rate limits + transient server errors.
+# Other 4xx (400/401/404/410/422 …) are permanent — retrying just wastes time.
+RETRYABLE_STATUS = frozenset({403, 408, 429}) | frozenset(range(500, 600))
+# Codes that mean "you're going too fast" — feed these back to the limiter.
+THROTTLE_STATUS = frozenset({429, 503})
 
 console = Console()
 log = logging.getLogger("auscrawl")
@@ -63,13 +78,6 @@ RE_WHITESPACE = re.compile(r"\s+")
 RE_CF_EMAIL = re.compile(r"/cdn-cgi/l/email-protection#([a-fA-F0-9]+)")
 RE_OPTION = re.compile(r'OPTION VALUE="([^"]+)"[^>]*>([^<]+)')
 RE_MIN_GRADE = re.compile(r"Minimum Grade of\s+([A-Z][+-]?)")
-RE_DETAIL_SECTION = re.compile(
-    r'<span[^>]*class="fieldlabeltext"[^>]*>\s*'
-    r"(Prerequisites|Corequisites|Restrictions)"
-    r"[^<]*</span>(.*?)(?=<span[^>]*class="
-    r'"fieldlabeltext"|<table|</td>)',
-    re.DOTALL | re.IGNORECASE,
-)
 
 # ── Data Classes ─────────────────────────────────────────────────────────────
 
@@ -167,6 +175,42 @@ def text_of(el) -> str:
     return el.text_content().strip()
 
 
+def should_retry_status(code: int) -> bool:
+    """Whether an HTTP status is worth retrying (vs. a permanent failure)."""
+    return code in RETRYABLE_STATUS
+
+
+def backoff_delay(
+    attempt: int, base: float = RETRY_BASE, *, rand: Callable[[], float] = random.random
+) -> float:
+    """Equal-jitter exponential backoff.
+
+    Returns a value in [cap/2, cap) where cap = base * 2**attempt. The jitter
+    de-synchronizes the many concurrent workers so they don't all back off by
+    the same amount and then retry in lockstep, which would re-trigger the
+    rate limit.
+    """
+    cap = base * (2 ** attempt)
+    half = cap / 2
+    return half + rand() * half
+
+
+def is_waf_block(content: bytes, limit: int = WAF_SCAN_LIMIT) -> bool:
+    """Detect a Cloudflare/WAF block page by its marker.
+
+    Scans only the first `limit` bytes so we never lowercase a multi-MB course
+    page on the event loop just to look for a short marker.
+    """
+    return b"support ticket" in content[:limit].lower()
+
+
+def parse_pool_size(cpu: Optional[int] = None) -> int:
+    """Thread-pool size for CPU-bound lxml parsing: scale with cores, bounded."""
+    if cpu is None:
+        cpu = os.cpu_count() or 4
+    return max(4, min(16, cpu))
+
+
 # ── Database ─────────────────────────────────────────────────────────────────
 
 SCHEMA = """
@@ -229,12 +273,13 @@ CREATE TABLE IF NOT EXISTS courses (
     instructor_name TEXT,
     instructor_email TEXT,
     is_lab BOOLEAN DEFAULT 0,
-    UNIQUE(crn, term_id, class_type, days, start_time)
+    UNIQUE(crn, term_id, class_type, days, start_time, end_time, classroom)
 );
 
 CREATE INDEX IF NOT EXISTS idx_courses_term ON courses(term_id);
 CREATE INDEX IF NOT EXISTS idx_courses_subject ON courses(subject);
 CREATE INDEX IF NOT EXISTS idx_courses_crn ON courses(crn);
+CREATE INDEX IF NOT EXISTS idx_courses_crn_term ON courses(crn, term_id);
 CREATE INDEX IF NOT EXISTS idx_courses_instructor ON courses(instructor_name);
 
 CREATE TABLE IF NOT EXISTS catalog (
@@ -285,7 +330,9 @@ def init_db(db_path: str, force: bool = False) -> sqlite3.Connection:
     """Initialize SQLite database with schema."""
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=OFF")
+    # NORMAL (not OFF) with WAL: fast, and safe against OS crash / power loss.
+    # OFF only protects against an app crash and can corrupt the file otherwise.
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA cache_size=-64000")
     conn.execute("PRAGMA temp_store=MEMORY")
 
@@ -407,14 +454,54 @@ def fix_first_seen(conn: sqlite3.Connection):
     conn.commit()
 
 
+def better_catalog(a: CatalogEntry, b: CatalogEntry) -> CatalogEntry:
+    """Merge two catalog entries for the same course without losing information.
+
+    The entry with the longer description is the base; any field it's missing
+    (None hours / empty department) is filled from the other. This makes catalog
+    writes monotonic — re-running can only improve a row, never degrade it.
+    """
+    base, other = (a, b) if len(a.description) >= len(b.description) else (b, a)
+    return CatalogEntry(
+        subject=base.subject,
+        course_number=base.course_number,
+        description=base.description,
+        credit_hours=base.credit_hours if base.credit_hours is not None else other.credit_hours,
+        lecture_hours=base.lecture_hours if base.lecture_hours is not None else other.lecture_hours,
+        lab_hours=base.lab_hours if base.lab_hours is not None else other.lab_hours,
+        department=base.department or other.department,
+    )
+
+
 def save_catalog(conn: sqlite3.Connection, entries: list[CatalogEntry]):
-    """Bulk-write catalog entries. Keeps entry with longest description per course."""
-    # Deduplicate: keep entry with longest description
+    """Merge catalog entries into the DB, keeping the best of new + existing."""
+    if not entries:
+        return
+
+    # Collapse this batch first.
     best: dict[tuple[str, str], CatalogEntry] = {}
     for e in entries:
         key = (e.subject, e.course_number)
-        if key not in best or len(e.description) > len(best[key].description):
-            best[key] = e
+        best[key] = better_catalog(best[key], e) if key in best else e
+
+    # Merge against whatever is already stored so a shorter description from a
+    # later run can't overwrite a fuller one.
+    placeholders = ",".join("(?, ?)" for _ in best)
+    flat = [v for key in best for v in key]
+    existing_rows = conn.execute(
+        "SELECT subject, course_number, description, credit_hours, lecture_hours, "
+        "lab_hours, department FROM catalog "
+        f"WHERE (subject, course_number) IN ({placeholders})",
+        flat,
+    ).fetchall()
+    for r in existing_rows:
+        key = (r[0], r[1])
+        existing = CatalogEntry(
+            subject=r[0], course_number=r[1], description=r[2] or "",
+            credit_hours=r[3], lecture_hours=r[4], lab_hours=r[5],
+            department=r[6] or "",
+        )
+        best[key] = better_catalog(best[key], existing)
 
     conn.executemany(
         "INSERT OR REPLACE INTO catalog "
@@ -465,14 +552,93 @@ def save_details(
 FORM_CONTENT_TYPE = {"content-type": "application/x-www-form-urlencoded"}
 
 
+class AdaptiveLimiter:
+    """AIMD concurrency limiter.
+
+    Gates concurrent work to a dynamic `limit`. On a throttle signal (429/503/
+    WAF block) the limit is multiplicatively decreased; on success it is
+    additively increased back toward `max_limit`. Unlike a fixed semaphore,
+    this backs the whole fleet off when the server starts pushing back instead
+    of letting the other workers keep hammering at full rate.
+    """
+
+    def __init__(
+        self,
+        start: float,
+        max_limit: float,
+        min_limit: float = 1.0,
+        increase: float = 1.0,
+        decrease: float = 0.5,
+    ):
+        self.limit = float(start)
+        self.max_limit = float(max_limit)
+        self.min_limit = float(min_limit)
+        self.increase = increase
+        self.decrease = decrease
+        self.active = 0
+        self._cond = asyncio.Condition()
+
+    async def acquire(self):
+        async with self._cond:
+            while self.active >= self.limit:
+                await self._cond.wait()
+            self.active += 1
+
+    async def release(self):
+        async with self._cond:
+            self.active -= 1
+            self._cond.notify(1)
+
+    async def record_success(self):
+        async with self._cond:
+            if self.limit < self.max_limit:
+                # Additive increase of one step per *window* of `limit` successes
+                # (textbook AIMD). Recovering by a full step on every single
+                # success would snap straight back to the ceiling and re-trigger
+                # the rate limit; this settles near the sustainable rate instead.
+                self.limit = min(self.max_limit, self.limit + self.increase / self.limit)
+                self._cond.notify(1)  # a freshly opened slot may be claimable
+
+    async def record_throttle(self):
+        async with self._cond:
+            self.limit = max(self.min_limit, self.limit * self.decrease)
+
+    @contextlib.asynccontextmanager
+    async def slot(self):
+        await self.acquire()
+        try:
+            yield
+        finally:
+            await self.release()
+
+
+def make_client(workers: int) -> httpx.AsyncClient:
+    """Build the shared HTTP/2 client.
+
+    A short connect timeout frees a worker fast when a connection is dead,
+    while keeping a long read timeout for the large course-search pages.
+    """
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(120.0, connect=10.0),
+        follow_redirects=True,
+        http2=True,
+        headers={"User-Agent": "AUSCrawl/2.0 (academic-data-project)"},
+        limits=httpx.Limits(
+            max_connections=workers + 5,
+            max_keepalive_connections=workers + 5,
+        ),
+    )
+
+
 async def request_with_retry(
     client: httpx.AsyncClient,
     method: str,
     url: str,
     form: list[tuple[str, str]] | dict[str, str] | None = None,
     params: dict[str, str] | None = None,
+    limiter: Optional[AdaptiveLimiter] = None,
 ) -> httpx.Response:
-    """HTTP request with retry and WAF detection."""
+    """HTTP request with jittered retry, WAF detection, and adaptive feedback."""
     kwargs: dict = {}
     if form is not None:
         kwargs["content"] = urlencode(form)
@@ -481,29 +647,39 @@ async def request_with_retry(
         kwargs["params"] = params
 
     for attempt in range(1, MAX_RETRIES + 1):
+        last = attempt == MAX_RETRIES
         try:
             resp = await client.request(method, url, **kwargs)
             resp.raise_for_status()
 
-            if "support ticket" in resp.text.lower():
-                wait = RETRY_BASE * (2 ** attempt)
+            if is_waf_block(resp.content):
+                if limiter:
+                    await limiter.record_throttle()
+                if last:
+                    break
+                wait = backoff_delay(attempt)
                 log.warning(f"WAF block (attempt {attempt}), retrying in {wait:.0f}s")
                 await asyncio.sleep(wait)
                 continue
 
+            if limiter:
+                await limiter.record_success()
             return resp
         except httpx.HTTPStatusError as e:
             code = e.response.status_code
-            wait = RETRY_BASE * (2 ** attempt)
-            if code in (403, 429, 500, 502, 503) or code >= 400:
-                log.warning(f"HTTP {code} (attempt {attempt}), retrying in {wait:.1f}s")
-                await asyncio.sleep(wait)
-                continue
-            raise
-        except httpx.RequestError as e:
-            if attempt == MAX_RETRIES:
+            if limiter and code in THROTTLE_STATUS:
+                await limiter.record_throttle()
+            if not should_retry_status(code):
                 raise
-            wait = RETRY_BASE * attempt
+            if last:
+                break
+            wait = backoff_delay(attempt)
+            log.warning(f"HTTP {code} (attempt {attempt}), retrying in {wait:.1f}s")
+            await asyncio.sleep(wait)
+        except httpx.RequestError as e:
+            if last:
+                raise
+            wait = backoff_delay(attempt)
             log.warning(f"Network error (attempt {attempt}): {e}, retrying in {wait:.0f}s")
             await asyncio.sleep(wait)
 
@@ -642,7 +818,7 @@ def _extract_meta(detail_td) -> dict:
     )
 
 
-def parse_courses(raw_html: str, term_id: str) -> list[Course]:
+def parse_courses(raw_html: str | bytes, term_id: str) -> list[Course]:
     """Parse courses from Banner HTML using lxml directly."""
     tree = lxml_html.fromstring(raw_html)
     courses: list[Course] = []
@@ -734,7 +910,7 @@ def parse_courses(raw_html: str, term_id: str) -> list[Course]:
 # ── HTML Parsing — Catalog ────────────────────────────────────────────────────
 
 
-def parse_catalog_page(raw_html: str) -> list[CatalogEntry]:
+def parse_catalog_page(raw_html: str | bytes) -> list[CatalogEntry]:
     """Parse catalog page for all courses of a subject."""
     tree = lxml_html.fromstring(raw_html)
     entries: list[CatalogEntry] = []
@@ -817,7 +993,7 @@ def parse_catalog_page(raw_html: str) -> list[CatalogEntry]:
 
 
 def parse_detail_page(
-    raw_html: str, crn: str, term_id: str,
+    raw_html: str | bytes, crn: str, term_id: str,
 ) -> tuple[SectionDetail, list[CourseDependency]]:
     """Parse section detail page for prerequisites, coreqs, restrictions, fees."""
     tree = lxml_html.fromstring(raw_html)
@@ -866,61 +1042,62 @@ def parse_detail_page(
                     if desc:
                         fees_list.append({"description": desc, "amount": amt})
 
-    # ── Parse text sections (prereqs, coreqs, restrictions) from HTML ──
-    raw_html_str = etree.tostring(main_td, encoding="unicode")
+    # ── Parse text sections + dependency links in a single lxml pass ──
+    # Walk the cell's direct children in document order, tracking which labelled
+    # section we're inside. A fieldlabeltext span or a <table> ends the current
+    # section (matching the old regex's boundaries, but without serializing the
+    # element back to HTML and re-parsing fragments).
+    targets = ("Prerequisites", "Corequisites", "Restrictions")
+    text_parts: dict[str, list[str]] = {t: [] for t in targets}
+    section_links: dict[str, list] = {t: [] for t in targets}
+    current: Optional[str] = None
 
-    sections: dict[str, str] = {}
-    for m in RE_DETAIL_SECTION.finditer(raw_html_str):
-        label = m.group(1)
-        fragment_html = m.group(2)
-        try:
-            frag_tree = lxml_html.fromstring(f"<div>{fragment_html}</div>")
-            text = RE_WHITESPACE.sub(" ", frag_tree.text_content()).strip()
-            sections[label] = text
-        except Exception:
-            pass
+    def collect(text):
+        if current is not None and text:
+            text_parts[current].append(text)
 
-    prerequisites = sections.get("Prerequisites", "")
-    corequisites = sections.get("Corequisites", "")
-    restrictions = sections.get("Restrictions", "")
+    collect(main_td.text)
+    for child in main_td:
+        tag = child.tag
+        if not isinstance(tag, str):  # comment / PI: no text_content, keep tail
+            collect(child.tail)
+            continue
+        if tag == "span" and child.get("class") == "fieldlabeltext":
+            label = (child.text or "").strip().rstrip(":").strip()
+            current = label if label in targets else None
+        elif tag == "table":
+            current = None
+        elif current is not None:
+            text_parts[current].append(child.text_content())
+            if tag == "a":
+                section_links[current].append(child)
+            else:
+                section_links[current].extend(child.iter("a"))
+        collect(child.tail)
 
-    # ── Parse structured dependency links ──
+    def section_text(label: str) -> str:
+        return RE_WHITESPACE.sub(" ", "".join(text_parts[label])).strip()
+
+    prerequisites = section_text("Prerequisites")
+    corequisites = section_text("Corequisites")
+    restrictions = section_text("Restrictions")
+
+    # ── Structured dependency links (prerequisites first, then corequisites) ──
     deps: list[CourseDependency] = []
-
-    def extract_deps(label: str, dep_type: str):
-        pattern = re.compile(
-            rf'<span[^>]*class="fieldlabeltext"[^>]*>[^<]*{re.escape(label)}[^<]*</span>'
-            rf"(.*?)(?=<span[^>]*class="
-            rf'"fieldlabeltext"|<table|</td>)',
-            re.DOTALL | re.IGNORECASE,
-        )
-        m = pattern.search(raw_html_str)
-        if not m:
-            return
-        try:
-            frag_tree = lxml_html.fromstring(f"<div>{m.group(1)}</div>")
-        except Exception:
-            return
-        for a in frag_tree.xpath(".//a[@href]"):
-            link_text = a.text_content().strip()
-            parts = link_text.split()
+    for label, dep_type in (
+        ("Prerequisites", "prerequisite"),
+        ("Corequisites", "corequisite"),
+    ):
+        for a in section_links[label]:
+            parts = a.text_content().split()
             if len(parts) < 2:
                 continue
-            subj = parts[0]
-            crse = parts[1]
-            # Minimum grade from tail text
-            min_grade = ""
-            tail = (a.tail or "").strip()
-            grade_m = RE_MIN_GRADE.search(tail)
-            if grade_m:
-                min_grade = grade_m.group(1)
+            grade_m = RE_MIN_GRADE.search((a.tail or "").strip())
             deps.append(CourseDependency(
                 crn=crn, term_id=term_id, dep_type=dep_type,
-                subject=subj, course_number=crse, minimum_grade=min_grade,
+                subject=parts[0], course_number=parts[1],
+                minimum_grade=grade_m.group(1) if grade_m else "",
             ))
-
-    extract_deps("Prerequisites", "prerequisite")
-    extract_deps("Corequisites", "corequisite")
 
     detail = SectionDetail(
         crn=crn, term_id=term_id,
@@ -944,19 +1121,10 @@ async def run(args: argparse.Namespace):
     conn = init_db(args.output, force=args.force)
 
     # Thread pool for CPU-bound HTML parsing (avoids blocking the event loop)
-    parse_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    parse_pool = concurrent.futures.ThreadPoolExecutor(max_workers=parse_pool_size())
     loop = asyncio.get_running_loop()
 
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(120.0),
-        follow_redirects=True,
-        http2=True,
-        headers={"User-Agent": "AUSCrawl/2.0 (academic-data-project)"},
-        limits=httpx.Limits(
-            max_connections=args.workers + 5,
-            max_keepalive_connections=args.workers + 5,
-        ),
-    ) as client:
+    async with make_client(args.workers) as client:
         t0 = time.monotonic()
 
         # ── Phase 1: Fetch semester list ──
@@ -1005,13 +1173,21 @@ async def run(args: argparse.Namespace):
                 async with subj_sem:
                     return await fetch_subjects(client, term_id)
 
+            # One flaky term must not abort the whole crawl: collect what we can.
             all_subj_lists = await asyncio.gather(
-                *(fetch_subj(s.term_id) for s in semesters)
+                *(fetch_subj(s.term_id) for s in semesters),
+                return_exceptions=True,
             )
+
+            subj_failures = sum(1 for r in all_subj_lists if isinstance(r, BaseException))
+            if subj_failures:
+                console.print(f"  [yellow]{subj_failures}[/] term(s) failed subject discovery (continuing)")
 
             # Deduplicate: keep the first (longest) long_name per code
             seen: dict[str, Subject] = {}
             for subj_list in all_subj_lists:
+                if isinstance(subj_list, BaseException):
+                    continue
                 for s in subj_list:
                     if s.short_name not in seen or len(s.long_name) > len(seen[s.short_name].long_name):
                         seen[s.short_name] = s
@@ -1035,7 +1211,7 @@ async def run(args: argparse.Namespace):
 
         # ── Phase 3: Fire all course requests concurrently ──
         console.print(f"[bold]Phase 3:[/] Crawling {len(semesters)} semesters ({args.workers} workers)...")
-        semaphore = asyncio.Semaphore(args.workers)
+        course_limiter = AdaptiveLimiter(start=args.workers, max_limit=args.workers, min_limit=2)
         results: list[tuple[Semester, list[Course]]] = []
         errors: list[str] = []
 
@@ -1054,14 +1230,18 @@ async def run(args: argparse.Namespace):
 
             async def fetch_batch(semester: Semester, params_template: list) -> list[Course]:
                 """Fetch one batch of courses for a semester."""
-                async with semaphore:
+                async with course_limiter.slot():
+                    if args.delay > 0:
+                        await asyncio.sleep(args.delay)
                     params = [("term_in", semester.term_id)] + params_template[1:]
                     resp = await request_with_retry(
-                        client, "POST", ENDPOINTS["courses"], form=params
+                        client, "POST", ENDPOINTS["courses"], form=params,
+                        limiter=course_limiter,
                     )
-                    # Parse in thread pool so HTTP I/O isn't blocked
+                    # Parse bytes in the thread pool so neither decoding nor
+                    # parsing blocks the event loop.
                     return await loop.run_in_executor(
-                        parse_pool, parse_courses, resp.text, semester.term_id
+                        parse_pool, parse_courses, resp.content, semester.term_id
                     )
 
             async def crawl_one(semester: Semester):
@@ -1081,9 +1261,6 @@ async def run(args: argparse.Namespace):
                     errors.append(f"{semester.term_name}: {e}")
                     results.append((semester, []))
                     progress.update(task, advance=1)
-
-                if args.delay > 0:
-                    await asyncio.sleep(args.delay)
 
             await asyncio.gather(*(crawl_one(s) for s in semesters))
 
@@ -1138,6 +1315,17 @@ async def run(args: argparse.Namespace):
                 c.subject for _, courses in results for c in courses
             } | {r[0] for r in conn.execute("SELECT DISTINCT subject FROM courses")})
 
+            # On --resume, don't re-fetch catalog for subjects we already have.
+            if args.resume:
+                done_subjects = {r[0] for r in conn.execute("SELECT DISTINCT subject FROM catalog")}
+                if done_subjects:
+                    before = len(all_subjects)
+                    all_subjects = [s for s in all_subjects if s not in done_subjects]
+                    console.print(
+                        f"  Resume: skipping catalog for [yellow]{before - len(all_subjects)}[/] "
+                        "subject(s) already present"
+                    )
+
             for term in sample_terms:
                 for subj in all_subjects:
                     subj_term_list.append((subj, term))
@@ -1159,9 +1347,10 @@ async def run(args: argparse.Namespace):
         if not subj_term_list and not crn_term_list:
             console.print("[bold]Phase 4+5:[/] Catalog and details already complete.")
         else:
-            # 10 workers for GET endpoints (higher causes excessive 429s after Phase 3)
-            detail_workers = min(args.workers, 10)
-            get_sem = asyncio.Semaphore(detail_workers)
+            # GET endpoints start 429-ing above ~10 workers after Phase 3, so cap
+            # the ceiling there and let the limiter back off further if needed.
+            detail_workers = min(args.workers, GET_WORKER_CAP)
+            get_limiter = AdaptiveLimiter(start=detail_workers, max_limit=detail_workers, min_limit=1)
 
             # ── Phase 4: Catalog ──
             if subj_term_list:
@@ -1182,7 +1371,9 @@ async def run(args: argparse.Namespace):
 
                     async def fetch_cat(subj: str, term_id: str):
                         nonlocal cat_errors
-                        async with get_sem:
+                        async with get_limiter.slot():
+                            if args.delay > 0:
+                                await asyncio.sleep(args.delay)
                             try:
                                 resp = await request_with_retry(
                                     client, "GET", ENDPOINTS["catalog"],
@@ -1194,9 +1385,10 @@ async def run(args: argparse.Namespace):
                                         "sel_divs": "", "sel_dept": "",
                                         "sel_attr": "",
                                     },
+                                    limiter=get_limiter,
                                 )
                                 entries = await loop.run_in_executor(
-                                    parse_pool, parse_catalog_page, resp.text
+                                    parse_pool, parse_catalog_page, resp.content
                                 )
                                 catalog_entries.extend(entries)
                             except Exception:
@@ -1231,14 +1423,17 @@ async def run(args: argparse.Namespace):
 
                     async def fetch_det(c: str, t: str):
                         nonlocal det_errors
-                        async with get_sem:
+                        async with get_limiter.slot():
+                            if args.delay > 0:
+                                await asyncio.sleep(args.delay)
                             try:
                                 resp = await request_with_retry(
                                     client, "GET", ENDPOINTS["detail"],
                                     params={"term_in": t, "crn_in": c},
+                                    limiter=get_limiter,
                                 )
                                 detail, deps = await loop.run_in_executor(
-                                    parse_pool, parse_detail_page, resp.text, c, t,
+                                    parse_pool, parse_detail_page, resp.content, c, t,
                                 )
                                 all_details.append(detail)
                                 all_deps.extend(deps)
@@ -1319,7 +1514,7 @@ def main():
     )
     parser.add_argument(
         "--delay", type=float, default=DEFAULT_DELAY,
-        help=f"Seconds between requests (default: {DEFAULT_DELAY})",
+        help=f"Seconds to pause before each request, per worker (default: {DEFAULT_DELAY})",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",

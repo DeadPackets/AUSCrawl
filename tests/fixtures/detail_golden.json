@@ -1,0 +1,125 @@
+{
+  "11179": {
+    "detail": {
+      "crn": "11179",
+      "term_id": "202710",
+      "prerequisites": "Undergraduate level WRI 102 Minimum Grade of C-",
+      "corequisites": "",
+      "restrictions": "Must be enrolled in one of the following Levels: Undergraduate",
+      "waitlist_capacity": 0,
+      "waitlist_actual": 0,
+      "waitlist_remaining": 0,
+      "fees": ""
+    },
+    "deps": [
+      {
+        "crn": "11179",
+        "term_id": "202710",
+        "dep_type": "prerequisite",
+        "subject": "WRI",
+        "course_number": "102",
+        "minimum_grade": "C-"
+      }
+    ]
+  },
+  "11180": {
+    "detail": {
+      "crn": "11180",
+      "term_id": "202710",
+      "prerequisites": "Undergraduate level WRI 102 Minimum Grade of C-",
+      "corequisites": "",
+      "restrictions": "Must be enrolled in one of the following Levels: Undergraduate",
+      "waitlist_capacity": 0,
+      "waitlist_actual": 0,
+      "waitlist_remaining": 0,
+      "fees": ""
+    },
+    "deps": [
+      {
+        "crn": "11180",
+        "term_id": "202710",
+        "dep_type": "prerequisite",
+        "subject": "WRI",
+        "course_number": "102",
+        "minimum_grade": "C-"
+      }
+    ]
+  },
+  "11181": {
+    "detail": {
+      "crn": "11181",
+      "term_id": "202710",
+      "prerequisites": "Undergraduate level WRI 102 Minimum Grade of C-",
+      "corequisites": "",
+      "restrictions": "Must be enrolled in one of the following Levels: Undergraduate",
+      "waitlist_capacity": 0,
+      "waitlist_actual": 0,
+      "waitlist_remaining": 0,
+      "fees": ""
+    },
+    "deps": [
+      {
+        "crn": "11181",
+        "term_id": "202710",
+        "dep_type": "prerequisite",
+        "subject": "WRI",
+        "course_number": "102",
+        "minimum_grade": "C-"
+      }
+    ]
+  },
+  "11182": {
+    "detail": {
+      "crn": "11182",
+      "term_id": "202710",
+      "prerequisites": "Undergraduate level WRI 102 Minimum Grade of C-",
+      "corequisites": "",
+      "restrictions": "Must be enrolled in one of the following Levels: Undergraduate",
+      "waitlist_capacity": 0,
+      "waitlist_actual": 0,
+      "waitlist_remaining": 0,
+      "fees": ""
+    },
+    "deps": [
+      {
+        "crn": "11182",
+        "term_id": "202710",
+        "dep_type": "prerequisite",
+        "subject": "WRI",
+        "course_number": "102",
+        "minimum_grade": "C-"
+      }
+    ]
+  },
+  "11509": {
+    "detail": {
+      "crn": "11509",
+      "term_id": "202710",
+      "prerequisites": "Undergraduate level ENG 203 Minimum Grade of C- or Undergraduate level ENG 204 Minimum Grade of C-",
+      "corequisites": "",
+      "restrictions": "Must be enrolled in one of the following Levels: Undergraduate May not be enrolled as the following Classifications: New First-Year First-Year I First-Year II",
+      "waitlist_capacity": 0,
+      "waitlist_actual": 0,
+      "waitlist_remaining": 0,
+      "fees": ""
+    },
+    "deps": [
+      {
+        "crn": "11509",
+        "term_id": "202710",
+        "dep_type": "prerequisite",
+        "subject": "ENG",
+        "course_number": "203",
+        "minimum_grade": "C-"
+      },
+      {
+        "crn": "11509",
+        "term_id": "202710",
+        "dep_type": "prerequisite",
+        "subject": "ENG",
+        "course_number": "204",
+        "minimum_grade": "C-"
+      }
+    ]
+  }
+}

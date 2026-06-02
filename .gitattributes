@@ -1,0 +1,3 @@
+# Captured Banner HTML is a byte-exact regression baseline for the parsers —
+# never EOL-normalize it, or the detail-parser golden test could drift.
+tests/fixtures/** -text
