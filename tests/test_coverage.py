@@ -40,6 +40,23 @@ def test_primary_fields_stay_backward_compatible():
     assert che699.instructor_email.endswith("@aus.edu")
 
 
+def test_instructor_name_with_internal_commas_is_one_person():
+    # Real POL 201610 cell: one professor whose name contains commas, plus (P)
+    # and a single email — must NOT be split into three instructors.
+    from lxml import html as lh
+    cell = lh.fromstring(
+        '<td class="dddefault">Johannes Adrianus, Antonius, Maria  Van Gorp '
+        '(<abbr title="Primary">P</abbr>)'
+        '<a href="/cdn-cgi/l/email-protection#6e04180f0009011c1e2e0f1b1d400b0a1b">'
+        '<img src="x"/></a></td>'
+    )
+    insts = crawl.parse_instructors(cell)
+    assert len(insts) == 1
+    assert insts[0].name == "Johannes Adrianus, Antonius, Maria Van Gorp"
+    assert insts[0].is_primary
+    assert insts[0].email.endswith("@aus.edu")
+
+
 def test_single_instructor_still_parsed():
     # PHI fixture: every section has one instructor, marked primary.
     for c in crawl.parse_courses(read_fixture("courses.html"), "202710"):

@@ -938,7 +938,7 @@ def parse_instructors(cell) -> list[InstructorRef]:
     no email link or no '(P)'.
     """
     segments: list[InstructorRef] = []
-    cur = {"name": "", "email": "", "primary": False}
+    cur = {"name": "", "email": "", "primary": False, "marked": False}
 
     def flush():
         raw = cur["name"]
@@ -946,15 +946,22 @@ def parse_instructors(cell) -> list[InstructorRef]:
         name = RE_WHITESPACE.sub(" ", RE_PAREN_P.sub("", raw)).strip().strip(",").strip()
         if name and name.upper() != "TBA":
             segments.append(InstructorRef(name=name, email=cur["email"], is_primary=primary))
+        cur.update(name="", email="", primary=False, marked=False)
 
     def feed_text(text):
         if not text:
             return
+        # A comma only separates instructors once the current one has its
+        # terminator — the (P) marker or an email link. Commas seen before that
+        # are part of the name (e.g. "Johannes Adrianus, Antonius, Maria Van Gorp").
         parts = text.split(",")
         cur["name"] += parts[0]
-        for extra in parts[1:]:           # each comma starts a new instructor
-            flush()
-            cur["name"], cur["email"], cur["primary"] = extra, "", False
+        for extra in parts[1:]:
+            if cur["marked"]:
+                flush()
+            else:
+                cur["name"] += ","
+            cur["name"] += extra
 
     feed_text(cell.text or "")
     for child in cell:
@@ -963,10 +970,12 @@ def parse_instructors(cell) -> list[InstructorRef]:
             if tag == "abbr" and (child.get("title") == "Primary"
                                   or (child.text or "").strip() == "P"):
                 cur["primary"] = True
+                cur["marked"] = True
             elif tag == "a":
                 cf = RE_CF_EMAIL.search(child.get("href", ""))
                 if cf:
                     cur["email"] = decode_cf_email(cf.group(1))
+                    cur["marked"] = True
         feed_text(child.tail or "")
     flush()
     return segments
