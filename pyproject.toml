@@ -8,3 +8,11 @@ dependencies = [
     "lxml>=6.0.2",
     "rich>=14.3.3",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -10,11 +10,13 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import os
+import random
 import re
 import sqlite3
 import time
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Callable, Optional
 from urllib.parse import urlencode
 
 import httpx
@@ -40,14 +42,30 @@ ENDPOINTS = {
     "subjects": f"{BASE_URL}/bwckgens.p_proc_term_date",
     "courses": f"{BASE_URL}/bwckschd.p_get_crse_unsec",
     "catalog": f"{BASE_URL}/bwckctlg.p_display_courses",
+    "catalog_detail": f"{BASE_URL}/bwckctlg.p_disp_course_detail",
     "detail": f"{BASE_URL}/bwckschd.p_disp_detail_sched",
 }
 DEFAULT_WORKERS = 50
-DEFAULT_DELAY = 0.0
+DEFAULT_DELAY = 0.0        # extra per-request pause; pacing is handled by --rate
+# Global request rate for the GET endpoints (req/s). Pacing the aggregate rate —
+# not the worker count — is what keeps us under the server's ~30 req/s 429
+# threshold, so we can run many workers to hide latency. AIMD probes between
+# DEFAULT_RATE and GET_MAX_RATE and backs off on 429s.
+DEFAULT_RATE = 18.0
+GET_MAX_RATE = 25.0
+GET_MIN_RATE = 3.0
+GET_CONCURRENCY = 30       # in-flight GET cap (enough to saturate the rate)
 MAX_RETRIES = 5
 RETRY_BASE = 2.0            # backoff base for all retries
 DETAIL_BATCH_SIZE = 5000   # save details every N for resilience
 CATALOG_SAMPLE_COUNT = 6   # number of evenly-spaced terms to sample for catalog
+WAF_SCAN_LIMIT = 65536     # bytes of a response to scan for the WAF marker
+
+# Status codes worth retrying: rate limits + transient server errors.
+# Other 4xx (400/401/404/410/422 …) are permanent — retrying just wastes time.
+RETRYABLE_STATUS = frozenset({403, 408, 429}) | frozenset(range(500, 600))
+# Codes that mean "you're going too fast" — feed these back to the limiter.
+THROTTLE_STATUS = frozenset({429, 503})
 
 console = Console()
 log = logging.getLogger("auscrawl")
@@ -63,13 +81,8 @@ RE_WHITESPACE = re.compile(r"\s+")
 RE_CF_EMAIL = re.compile(r"/cdn-cgi/l/email-protection#([a-fA-F0-9]+)")
 RE_OPTION = re.compile(r'OPTION VALUE="([^"]+)"[^>]*>([^<]+)')
 RE_MIN_GRADE = re.compile(r"Minimum Grade of\s+([A-Z][+-]?)")
-RE_DETAIL_SECTION = re.compile(
-    r'<span[^>]*class="fieldlabeltext"[^>]*>\s*'
-    r"(Prerequisites|Corequisites|Restrictions)"
-    r"[^<]*</span>(.*?)(?=<span[^>]*class="
-    r'"fieldlabeltext"|<table|</td>)',
-    re.DOTALL | re.IGNORECASE,
-)
+RE_PAREN_P = re.compile(r"\(\s*P?\s*\)")        # "(P)" primary marker or stray "()"
+RE_PRIMARY = re.compile(r"\(\s*P\s*\)")          # detect the primary marker in text
 
 # ── Data Classes ─────────────────────────────────────────────────────────────
 
@@ -84,6 +97,13 @@ class Semester:
 class Subject:
     short_name: str
     long_name: str
+
+
+@dataclass(slots=True)
+class InstructorRef:
+    name: str
+    email: str = ""
+    is_primary: bool = False
 
 
 @dataclass(slots=True)
@@ -108,9 +128,11 @@ class Course:
     seats_available: Optional[bool] = None
     classroom: str = ""
     date_range: str = ""
-    instructor_name: str = ""
-    instructor_email: str = ""
+    instructor_name: str = ""   # primary instructor (kept for backward compat)
+    instructor_email: str = ""  # primary instructor's email
     is_lab: bool = False
+    # All instructors on this meeting block (primary + secondary). See G1.
+    instructors: list[InstructorRef] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -135,6 +157,9 @@ class SectionDetail:
     waitlist_actual: int = 0
     waitlist_remaining: int = 0
     fees: str = ""  # JSON array of {description, amount}
+    prerequisites_json: str = ""   # G3: boolean expression tree (JSON)
+    corequisites_json: str = ""    # G3: boolean expression tree (JSON)
+    restrictions_json: str = ""    # G4: typed include/exclude groups (JSON)
 
 
 @dataclass(slots=True)
@@ -145,6 +170,20 @@ class CourseDependency:
     subject: str
     course_number: str
     minimum_grade: str = ""
+
+
+@dataclass(slots=True)
+class CatalogDetail:
+    """Course-level data from bwckctlg.p_disp_course_detail (G2)."""
+    subject: str
+    course_number: str
+    term_id: str = ""           # the term whose catalog entry was read
+    levels: str = ""
+    schedule_types: str = ""
+    course_attributes: str = ""  # degree-requirement tags
+    prerequisites: str = ""
+    corequisites: str = ""
+    restrictions: str = ""
 
 
 # ── Utilities ────────────────────────────────────────────────────────────────
@@ -165,6 +204,42 @@ def decode_cf_email(encoded: str) -> str:
 def text_of(el) -> str:
     """Fast text_content() for an lxml element."""
     return el.text_content().strip()
+
+
+def should_retry_status(code: int) -> bool:
+    """Whether an HTTP status is worth retrying (vs. a permanent failure)."""
+    return code in RETRYABLE_STATUS
+
+
+def backoff_delay(
+    attempt: int, base: float = RETRY_BASE, *, rand: Callable[[], float] = random.random
+) -> float:
+    """Equal-jitter exponential backoff.
+
+    Returns a value in [cap/2, cap) where cap = base * 2**attempt. The jitter
+    de-synchronizes the many concurrent workers so they don't all back off by
+    the same amount and then retry in lockstep, which would re-trigger the
+    rate limit.
+    """
+    cap = base * (2 ** attempt)
+    half = cap / 2
+    return half + rand() * half
+
+
+def is_waf_block(content: bytes, limit: int = WAF_SCAN_LIMIT) -> bool:
+    """Detect a Cloudflare/WAF block page by its marker.
+
+    Scans only the first `limit` bytes so we never lowercase a multi-MB course
+    page on the event loop just to look for a short marker.
+    """
+    return b"support ticket" in content[:limit].lower()
+
+
+def parse_pool_size(cpu: Optional[int] = None) -> int:
+    """Thread-pool size for CPU-bound lxml parsing: scale with cores, bounded."""
+    if cpu is None:
+        cpu = os.cpu_count() or 4
+    return max(4, min(16, cpu))
 
 
 # ── Database ─────────────────────────────────────────────────────────────────
@@ -229,12 +304,13 @@ CREATE TABLE IF NOT EXISTS courses (
     instructor_name TEXT,
     instructor_email TEXT,
     is_lab BOOLEAN DEFAULT 0,
-    UNIQUE(crn, term_id, class_type, days, start_time)
+    UNIQUE(crn, term_id, class_type, days, start_time, end_time, classroom)
 );
 
 CREATE INDEX IF NOT EXISTS idx_courses_term ON courses(term_id);
 CREATE INDEX IF NOT EXISTS idx_courses_subject ON courses(subject);
 CREATE INDEX IF NOT EXISTS idx_courses_crn ON courses(crn);
+CREATE INDEX IF NOT EXISTS idx_courses_crn_term ON courses(crn, term_id);
 CREATE INDEX IF NOT EXISTS idx_courses_instructor ON courses(instructor_name);
 
 CREATE TABLE IF NOT EXISTS catalog (
@@ -260,7 +336,34 @@ CREATE TABLE IF NOT EXISTS section_details (
     waitlist_actual INTEGER DEFAULT 0,
     waitlist_remaining INTEGER DEFAULT 0,
     fees TEXT DEFAULT '',
+    prerequisites_json TEXT DEFAULT '',
+    corequisites_json TEXT DEFAULT '',
+    restrictions_json TEXT DEFAULT '',
     UNIQUE(crn, term_id)
+);
+
+CREATE TABLE IF NOT EXISTS section_instructors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    crn TEXT NOT NULL,
+    term_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    email TEXT,
+    is_primary BOOLEAN DEFAULT 0,
+    UNIQUE(crn, term_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS catalog_detail (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject TEXT NOT NULL,
+    course_number TEXT NOT NULL,
+    term_id TEXT DEFAULT '',
+    levels TEXT DEFAULT '',
+    schedule_types TEXT DEFAULT '',
+    course_attributes TEXT DEFAULT '',
+    prerequisites TEXT DEFAULT '',
+    corequisites TEXT DEFAULT '',
+    restrictions TEXT DEFAULT '',
+    UNIQUE(subject, course_number)
 );
 
 CREATE TABLE IF NOT EXISTS course_dependencies (
@@ -278,6 +381,9 @@ CREATE INDEX IF NOT EXISTS idx_catalog_subject ON catalog(subject);
 CREATE INDEX IF NOT EXISTS idx_section_details_crn ON section_details(crn, term_id);
 CREATE INDEX IF NOT EXISTS idx_deps_crn ON course_dependencies(crn, term_id);
 CREATE INDEX IF NOT EXISTS idx_deps_target ON course_dependencies(subject, course_number);
+CREATE INDEX IF NOT EXISTS idx_section_instructors ON section_instructors(crn, term_id);
+CREATE INDEX IF NOT EXISTS idx_section_instructors_name ON section_instructors(name);
+CREATE INDEX IF NOT EXISTS idx_catalog_detail_subject ON catalog_detail(subject);
 """
 
 
@@ -285,21 +391,38 @@ def init_db(db_path: str, force: bool = False) -> sqlite3.Connection:
     """Initialize SQLite database with schema."""
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=OFF")
+    # NORMAL (not OFF) with WAL: fast, and safe against OS crash / power loss.
+    # OFF only protects against an app crash and can corrupt the file otherwise.
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA cache_size=-64000")
     conn.execute("PRAGMA temp_store=MEMORY")
 
     if force:
         for table in (
-            "course_dependencies", "section_details", "catalog",
-            "courses", "instructors", "subjects", "levels", "attributes", "semesters",
+            "course_dependencies", "section_details", "section_instructors",
+            "catalog", "catalog_detail", "courses", "instructors", "subjects",
+            "levels", "attributes", "semesters",
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.commit()
 
     conn.executescript(SCHEMA)
+    migrate_schema(conn)
     conn.commit()
     return conn
+
+
+def migrate_schema(conn: sqlite3.Connection):
+    """Add columns introduced after a DB was first created (idempotent).
+
+    `CREATE TABLE IF NOT EXISTS` makes the new tables, but won't add columns to a
+    pre-existing `section_details`, so an older snapshot is brought up to date by
+    ALTERing in the structured-JSON columns.
+    """
+    have = {r[1] for r in conn.execute("PRAGMA table_info(section_details)")}
+    for col in ("prerequisites_json", "corequisites_json", "restrictions_json"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE section_details ADD COLUMN {col} TEXT DEFAULT ''")
 
 
 def bulk_save(
@@ -327,11 +450,13 @@ def bulk_save(
     all_courses.sort(key=lambda t: t[0].term_id)
 
     instructors_seen: set[tuple[str, str]] = set()
+    sec_instr_seen: set[tuple[str, str, str]] = set()
     levels_seen: set[str] = set()
     attrs_seen: set[str] = set()
 
     course_rows = []
     instructor_rows = []
+    section_instructor_rows = []
     level_rows = []
     attr_rows = []
 
@@ -346,11 +471,26 @@ def bulk_save(
                 c.is_lab,
             ))
 
-            if c.instructor_name and c.instructor_name != "TBA":
-                key = (c.instructor_name, c.instructor_email or "")
-                if key not in instructors_seen:
-                    instructors_seen.add(key)
-                    instructor_rows.append((c.instructor_name, c.instructor_email or None, semester.term_id))
+            # Every instructor (primary + secondary) feeds the global table and
+            # the per-section link table. Falls back to the primary fields for
+            # the no-schedule-table case where `instructors` is empty.
+            refs = c.instructors or (
+                [InstructorRef(c.instructor_name, c.instructor_email, True)]
+                if c.instructor_name and c.instructor_name != "TBA" else []
+            )
+            for ref in refs:
+                if not ref.name or ref.name == "TBA":
+                    continue
+                gkey = (ref.name, ref.email or "")
+                if gkey not in instructors_seen:
+                    instructors_seen.add(gkey)
+                    instructor_rows.append((ref.name, ref.email or None, semester.term_id))
+                skey = (c.crn, c.term_id, ref.name)
+                if skey not in sec_instr_seen:
+                    sec_instr_seen.add(skey)
+                    section_instructor_rows.append(
+                        (c.crn, c.term_id, ref.name, ref.email or None, 1 if ref.is_primary else 0)
+                    )
 
             if c.levels:
                 for level in c.levels.split(", "):
@@ -381,6 +521,11 @@ def bulk_save(
         instructor_rows,
     )
     cur.executemany(
+        "INSERT OR IGNORE INTO section_instructors (crn, term_id, name, email, is_primary) "
+        "VALUES (?, ?, ?, ?, ?)",
+        section_instructor_rows,
+    )
+    cur.executemany(
         "INSERT OR IGNORE INTO levels (level, first_seen) VALUES (?, ?)",
         level_rows,
     )
@@ -407,14 +552,54 @@ def fix_first_seen(conn: sqlite3.Connection):
     conn.commit()
 
 
+def better_catalog(a: CatalogEntry, b: CatalogEntry) -> CatalogEntry:
+    """Merge two catalog entries for the same course without losing information.
+
+    The entry with the longer description is the base; any field it's missing
+    (None hours / empty department) is filled from the other. This makes catalog
+    writes monotonic — re-running can only improve a row, never degrade it.
+    """
+    base, other = (a, b) if len(a.description) >= len(b.description) else (b, a)
+    return CatalogEntry(
+        subject=base.subject,
+        course_number=base.course_number,
+        description=base.description,
+        credit_hours=base.credit_hours if base.credit_hours is not None else other.credit_hours,
+        lecture_hours=base.lecture_hours if base.lecture_hours is not None else other.lecture_hours,
+        lab_hours=base.lab_hours if base.lab_hours is not None else other.lab_hours,
+        department=base.department or other.department,
+    )
+
+
 def save_catalog(conn: sqlite3.Connection, entries: list[CatalogEntry]):
-    """Bulk-write catalog entries. Keeps entry with longest description per course."""
-    # Deduplicate: keep entry with longest description
+    """Merge catalog entries into the DB, keeping the best of new + existing."""
+    if not entries:
+        return
+
+    # Collapse this batch first.
     best: dict[tuple[str, str], CatalogEntry] = {}
     for e in entries:
         key = (e.subject, e.course_number)
-        if key not in best or len(e.description) > len(best[key].description):
-            best[key] = e
+        best[key] = better_catalog(best[key], e) if key in best else e
+
+    # Merge against whatever is already stored so a shorter description from a
+    # later run can't overwrite a fuller one.
+    placeholders = ",".join("(?, ?)" for _ in best)
+    flat = [v for key in best for v in key]
+    existing_rows = conn.execute(
+        "SELECT subject, course_number, description, credit_hours, lecture_hours, "
+        "lab_hours, department FROM catalog "
+        f"WHERE (subject, course_number) IN ({placeholders})",
+        flat,
+    ).fetchall()
+    for r in existing_rows:
+        key = (r[0], r[1])
+        existing = CatalogEntry(
+            subject=r[0], course_number=r[1], description=r[2] or "",
+            credit_hours=r[3], lecture_hours=r[4], lab_hours=r[5],
+            department=r[6] or "",
+        )
+        best[key] = better_catalog(best[key], existing)
 
     conn.executemany(
         "INSERT OR REPLACE INTO catalog "
@@ -424,6 +609,24 @@ def save_catalog(conn: sqlite3.Connection, entries: list[CatalogEntry]):
             (e.subject, e.course_number, e.description, e.credit_hours,
              e.lecture_hours, e.lab_hours, e.department)
             for e in best.values()
+        ],
+    )
+    conn.commit()
+
+
+def save_catalog_detail(conn: sqlite3.Connection, entries: list[CatalogDetail]):
+    """Bulk-upsert course-level catalog detail rows (G2)."""
+    if not entries:
+        return
+    conn.executemany(
+        "INSERT OR REPLACE INTO catalog_detail "
+        "(subject, course_number, term_id, levels, schedule_types, course_attributes, "
+        "prerequisites, corequisites, restrictions) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (e.subject, e.course_number, e.term_id, e.levels, e.schedule_types,
+             e.course_attributes, e.prerequisites, e.corequisites, e.restrictions)
+            for e in entries
         ],
     )
     conn.commit()
@@ -439,11 +642,13 @@ def save_details(
         conn.executemany(
             "INSERT OR IGNORE INTO section_details "
             "(crn, term_id, prerequisites, corequisites, restrictions, "
-            "waitlist_capacity, waitlist_actual, waitlist_remaining, fees) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "waitlist_capacity, waitlist_actual, waitlist_remaining, fees, "
+            "prerequisites_json, corequisites_json, restrictions_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (d.crn, d.term_id, d.prerequisites, d.corequisites, d.restrictions,
-                 d.waitlist_capacity, d.waitlist_actual, d.waitlist_remaining, d.fees)
+                 d.waitlist_capacity, d.waitlist_actual, d.waitlist_remaining, d.fees,
+                 d.prerequisites_json, d.corequisites_json, d.restrictions_json)
                 for d in details
             ],
         )
@@ -465,14 +670,83 @@ def save_details(
 FORM_CONTENT_TYPE = {"content-type": "application/x-www-form-urlencoded"}
 
 
+class RateLimiter:
+    """Global request-rate limiter with AIMD feedback.
+
+    Paces request *starts* to at most ``rate`` per second, independent of how
+    many workers are in flight. This decouples rate from concurrency: we can run
+    many concurrent workers (to hide per-request latency) while keeping the
+    aggregate rate safely under the server's 429 threshold — strictly safer than
+    a per-worker delay, which bursts. A 429/503/WAF cuts the rate multiplicatively
+    (AIMD decrease); sustained success raises it additively (one step per window)
+    back toward ``max_rate``, so it settles just under the sustainable rate.
+    """
+
+    def __init__(
+        self,
+        rate: float,
+        max_rate: Optional[float] = None,
+        min_rate: float = 2.0,
+        decrease: float = 0.5,
+        increase: float = 1.0,
+        now: Callable[[], float] = time.monotonic,
+    ):
+        self.rate = float(rate)
+        self.max_rate = float(max_rate if max_rate is not None else rate)
+        self.min_rate = float(min_rate)
+        self.decrease = decrease
+        self.increase = increase
+        self._now = now
+        self._next_free: Optional[float] = None
+        self._lock = asyncio.Lock()
+
+    def _reserve(self, now: float) -> float:
+        """Claim the next slot; return seconds to wait before issuing."""
+        start = now if self._next_free is None else max(self._next_free, now)
+        self._next_free = start + 1.0 / self.rate
+        return max(0.0, start - now)
+
+    async def acquire(self):
+        async with self._lock:
+            wait = self._reserve(self._now())
+        if wait > 0:  # sleep outside the lock so waiters pace in parallel
+            await asyncio.sleep(wait)
+
+    def record_throttle(self):
+        self.rate = max(self.min_rate, self.rate * self.decrease)
+
+    def record_success(self):
+        if self.rate < self.max_rate:
+            self.rate = min(self.max_rate, self.rate + self.increase / self.rate)
+
+
+def make_client(workers: int) -> httpx.AsyncClient:
+    """Build the shared HTTP/2 client.
+
+    A short connect timeout frees a worker fast when a connection is dead,
+    while keeping a long read timeout for the large course-search pages.
+    """
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(120.0, connect=10.0),
+        follow_redirects=True,
+        http2=True,
+        headers={"User-Agent": "AUSCrawl/2.0 (academic-data-project)"},
+        limits=httpx.Limits(
+            max_connections=workers + 5,
+            max_keepalive_connections=workers + 5,
+        ),
+    )
+
+
 async def request_with_retry(
     client: httpx.AsyncClient,
     method: str,
     url: str,
     form: list[tuple[str, str]] | dict[str, str] | None = None,
     params: dict[str, str] | None = None,
+    rate: Optional[RateLimiter] = None,
 ) -> httpx.Response:
-    """HTTP request with retry and WAF detection."""
+    """HTTP request with global rate pacing, jittered retry, and WAF detection."""
     kwargs: dict = {}
     if form is not None:
         kwargs["content"] = urlencode(form)
@@ -481,29 +755,41 @@ async def request_with_retry(
         kwargs["params"] = params
 
     for attempt in range(1, MAX_RETRIES + 1):
+        last = attempt == MAX_RETRIES
+        if rate:                      # pace every attempt, including retries
+            await rate.acquire()
         try:
             resp = await client.request(method, url, **kwargs)
             resp.raise_for_status()
 
-            if "support ticket" in resp.text.lower():
-                wait = RETRY_BASE * (2 ** attempt)
+            if is_waf_block(resp.content):
+                if rate:
+                    rate.record_throttle()
+                if last:
+                    break
+                wait = backoff_delay(attempt)
                 log.warning(f"WAF block (attempt {attempt}), retrying in {wait:.0f}s")
                 await asyncio.sleep(wait)
                 continue
 
+            if rate:
+                rate.record_success()
             return resp
         except httpx.HTTPStatusError as e:
             code = e.response.status_code
-            wait = RETRY_BASE * (2 ** attempt)
-            if code in (403, 429, 500, 502, 503) or code >= 400:
-                log.warning(f"HTTP {code} (attempt {attempt}), retrying in {wait:.1f}s")
-                await asyncio.sleep(wait)
-                continue
-            raise
-        except httpx.RequestError as e:
-            if attempt == MAX_RETRIES:
+            if rate and code in THROTTLE_STATUS:
+                rate.record_throttle()
+            if not should_retry_status(code):
                 raise
-            wait = RETRY_BASE * attempt
+            if last:
+                break
+            wait = backoff_delay(attempt)
+            log.warning(f"HTTP {code} (attempt {attempt}), retrying in {wait:.1f}s")
+            await asyncio.sleep(wait)
+        except httpx.RequestError as e:
+            if last:
+                raise
+            wait = backoff_delay(attempt)
             log.warning(f"Network error (attempt {attempt}): {e}, retrying in {wait:.0f}s")
             await asyncio.sleep(wait)
 
@@ -642,7 +928,60 @@ def _extract_meta(detail_td) -> dict:
     )
 
 
-def parse_courses(raw_html: str, term_id: str) -> list[Course]:
+def parse_instructors(cell) -> list[InstructorRef]:
+    """Parse every instructor from a schedule 'Instructors' cell (G1).
+
+    Banner lists instructors comma-separated; the primary carries a '(P)' marker
+    (an ``<abbr title="Primary">P</abbr>``) and each name is followed by its own
+    email link. We split on commas while walking the DOM in document order so a
+    given email stays attached to the right name even when some instructors have
+    no email link or no '(P)'.
+    """
+    segments: list[InstructorRef] = []
+    cur = {"name": "", "email": "", "primary": False, "marked": False}
+
+    def flush():
+        raw = cur["name"]
+        primary = cur["primary"] or bool(RE_PRIMARY.search(raw))
+        name = RE_WHITESPACE.sub(" ", RE_PAREN_P.sub("", raw)).strip().strip(",").strip()
+        if name and name.upper() != "TBA":
+            segments.append(InstructorRef(name=name, email=cur["email"], is_primary=primary))
+        cur.update(name="", email="", primary=False, marked=False)
+
+    def feed_text(text):
+        if not text:
+            return
+        # A comma only separates instructors once the current one has its
+        # terminator — the (P) marker or an email link. Commas seen before that
+        # are part of the name (e.g. "Johannes Adrianus, Antonius, Maria Van Gorp").
+        parts = text.split(",")
+        cur["name"] += parts[0]
+        for extra in parts[1:]:
+            if cur["marked"]:
+                flush()
+            else:
+                cur["name"] += ","
+            cur["name"] += extra
+
+    feed_text(cell.text or "")
+    for child in cell:
+        tag = child.tag
+        if isinstance(tag, str):
+            if tag == "abbr" and (child.get("title") == "Primary"
+                                  or (child.text or "").strip() == "P"):
+                cur["primary"] = True
+                cur["marked"] = True
+            elif tag == "a":
+                cf = RE_CF_EMAIL.search(child.get("href", ""))
+                if cf:
+                    cur["email"] = decode_cf_email(cf.group(1))
+                    cur["marked"] = True
+        feed_text(child.tail or "")
+    flush()
+    return segments
+
+
+def parse_courses(raw_html: str | bytes, term_id: str) -> list[Course]:
     """Parse courses from Banner HTML using lxml directly."""
     tree = lxml_html.fromstring(raw_html)
     courses: list[Course] = []
@@ -724,6 +1063,7 @@ def parse_courses(raw_html: str, term_id: str) -> list[Course]:
                     instructor_name=instructor_name,
                     instructor_email=instructor_email,
                     is_lab=(class_type == "Lab" or _sched_type == "Lab"),
+                    instructors=parse_instructors(cells[7]),
                 ))
         else:
             courses.append(Course(**base, is_lab="lab" in class_title.lower()))
@@ -734,7 +1074,7 @@ def parse_courses(raw_html: str, term_id: str) -> list[Course]:
 # ── HTML Parsing — Catalog ────────────────────────────────────────────────────
 
 
-def parse_catalog_page(raw_html: str) -> list[CatalogEntry]:
+def parse_catalog_page(raw_html: str | bytes) -> list[CatalogEntry]:
     """Parse catalog page for all courses of a subject."""
     tree = lxml_html.fromstring(raw_html)
     entries: list[CatalogEntry] = []
@@ -816,8 +1156,334 @@ def parse_catalog_page(raw_html: str) -> list[CatalogEntry]:
 # ── HTML Parsing — Section Detail ─────────────────────────────────────────────
 
 
+def extract_label_sections(cell, targets: tuple[str, ...]):
+    """Single-pass walk of an OWA content cell.
+
+    Returns (items_by_label, links_by_label). ``items`` is an ordered list of
+    ``('t', text)`` / ``('el', element)`` per target ``fieldlabeltext`` section,
+    from which collapsed text, line structure (G4), and requirement tokens (G3)
+    are all derived. Any fieldlabeltext span or a ``<table>`` ends the current
+    section — matching the original parser's boundaries.
+    """
+    items: dict[str, list] = {t: [] for t in targets}
+    links: dict[str, list] = {t: [] for t in targets}
+    current: Optional[str] = None
+
+    def add_text(text):
+        if current is not None and text:
+            items[current].append(("t", text))
+
+    add_text(cell.text)
+    for child in cell:
+        tag = child.tag
+        if not isinstance(tag, str):  # comment / PI: no text_content, keep tail
+            add_text(child.tail)
+            continue
+        if tag == "span" and child.get("class") == "fieldlabeltext":
+            label = (child.text or "").strip().rstrip(":").strip()
+            current = label if label in targets else None
+            add_text(child.tail)
+            continue
+        if tag == "table":
+            current = None
+            add_text(child.tail)
+            continue
+        if current is not None:
+            items[current].append(("el", child))
+            if tag == "a":
+                links[current].append(child)
+            else:
+                links[current].extend(child.iter("a"))
+        add_text(child.tail)
+    return items, links
+
+
+def collapse_items(items: list) -> str:
+    """Whitespace-collapsed text of a section's items (matches legacy output)."""
+    parts = [v if k == "t" else v.text_content() for k, v in items]
+    return RE_WHITESPACE.sub(" ", "".join(parts)).strip()
+
+
+def section_lines(items: list) -> list[str]:
+    """Split a section's items into non-empty lines at ``<br>`` boundaries."""
+    buf = []
+    for kind, val in items:
+        if kind == "t":
+            buf.append(val)
+        elif val.tag == "br":
+            buf.append("\n")
+        else:
+            buf.append(val.text_content())
+    lines = [RE_WHITESPACE.sub(" ", ln).strip() for ln in "".join(buf).split("\n")]
+    return [ln for ln in lines if ln]
+
+
+RE_RESTR_HEADER = re.compile(r"^(must|may not)\s+be\s+enrolled\b.*:\s*$", re.IGNORECASE)
+RE_RESTR_TYPE = re.compile(r"following\s+(.+?):\s*$", re.IGNORECASE)
+
+
+def parse_restrictions(items: list) -> str:
+    """G4: parse restriction lines into typed include/exclude groups (JSON).
+
+    Banner emits a header per group ("Must be enrolled in one of the following
+    Levels:" / "May not be enrolled as the following Classifications:") followed
+    by the member values, one per line.
+    """
+    groups: list[dict] = []
+    cur: Optional[dict] = None
+    for ln in section_lines(items):
+        if RE_RESTR_HEADER.match(ln):
+            m = RE_RESTR_TYPE.search(ln)
+            cur = {
+                "include": ln[:4].lower() == "must",
+                "type": (m.group(1).strip() if m else ln.rsplit(":", 1)[0].strip()),
+                "values": [],
+            }
+            groups.append(cur)
+        elif cur is not None:
+            cur["values"].append(ln)
+    groups = [g for g in groups if g["values"]]
+    return json.dumps(groups, ensure_ascii=False) if groups else ""
+
+
+RE_LEVEL_QUALIFIER = re.compile(r"([A-Za-z][\w-]*)\s+level\b")
+RE_REQ_OP = re.compile(r"\(|\)|\b(?:and|or)\b", re.IGNORECASE)
+
+
+def _requirement_tokens(items: list) -> list[tuple]:
+    """Tokenize a prereq/coreq section into LEAF / AND / OR / LP / RP tokens."""
+    tokens: list[tuple] = []
+    for i, (kind, val) in enumerate(items):
+        if kind == "el" and isinstance(val.tag, str) and val.tag == "a":
+            parts = val.text_content().split()
+            if len(parts) < 2:
+                continue
+            level = ""
+            if i > 0 and items[i - 1][0] == "t":
+                lm = RE_LEVEL_QUALIFIER.findall(items[i - 1][1])
+                if lm:
+                    level = lm[-1]
+            tail = val.tail or ""
+            gm = RE_MIN_GRADE.search(tail)
+            tokens.append(("LEAF", {
+                "type": "course",
+                "subject": parts[0],
+                "course_number": parts[1],
+                "min_grade": gm.group(1) if gm else "",
+                "level": level,
+                "concurrent": "concurrent" in tail.lower(),
+            }))
+        elif kind == "t":
+            for mt in RE_REQ_OP.finditer(val):
+                s = mt.group(0)
+                tokens.append(({"(": "LP", ")": "RP"}.get(s, s.upper()), None))
+    return tokens
+
+
+def _merge(op: str, *nodes) -> list:
+    """Flatten same-operator children so chains become a single n-ary node."""
+    out: list = []
+    for node in nodes:
+        if isinstance(node, dict) and node.get("type") == op:
+            out.extend(node["operands"])
+        else:
+            out.append(node)
+    return out
+
+
+def _tree_from_tokens(tokens: list[tuple]):
+    """Shunting-yard: LEAF/AND/OR/LP/RP tokens -> nested expression tree.
+
+    AND binds tighter than OR; parentheses group. Returns a nested dict
+    (``{"type":"and"|"or","operands":[...]}`` or a single course leaf), or None.
+    """
+    prec = {"AND": 2, "OR": 1}
+    rpn: list[tuple] = []
+    ops: list[str] = []
+    for typ, payload in tokens:
+        if typ == "LEAF":
+            rpn.append(("LEAF", payload))
+        elif typ in ("AND", "OR"):
+            while ops and ops[-1] in prec and prec[ops[-1]] >= prec[typ]:
+                rpn.append((ops.pop(), None))
+            ops.append(typ)
+        elif typ == "LP":
+            ops.append("LP")
+        elif typ == "RP":
+            while ops and ops[-1] != "LP":
+                rpn.append((ops.pop(), None))
+            if ops and ops[-1] == "LP":
+                ops.pop()
+    while ops:
+        if ops[-1] in prec:
+            rpn.append((ops.pop(), None))
+        else:
+            ops.pop()
+
+    stack: list = []
+    for typ, payload in rpn:
+        if typ == "LEAF":
+            stack.append(payload)
+        elif len(stack) >= 2:
+            b, a = stack.pop(), stack.pop()
+            stack.append({"type": typ.lower(), "operands": _merge(typ.lower(), a, b)})
+    if not stack:
+        return None
+    if len(stack) == 1:
+        return stack[0]
+    return {"type": "and", "operands": stack}  # bare leaves with no operator
+
+
+def requirement_tree(items: list):
+    """G3: boolean prereq/coreq tree from parsed HTML section items."""
+    return _tree_from_tokens(_requirement_tokens(items))
+
+
+def requirement_json(items: list) -> str:
+    tree = requirement_tree(items)
+    return json.dumps(tree, ensure_ascii=False) if tree else ""
+
+
+# A course requirement leaf in *collapsed text* (used to backfill the tree from
+# already-stored prerequisites text — no HTML, so no <a> tags to key on):
+#   "<Level> level <SUBJ> <NUM> Minimum Grade of <G> (pre-req concurrent)"
+RE_REQ_TOKEN_TEXT = re.compile(
+    r"(?P<course>(?:(?P<level>[A-Z][\w-]*)\s+level\s+)?"
+    r"(?P<subj>[A-Z]{2,5})\s+(?P<num>[0-9][\w-]*)"
+    r"(?:\s+Minimum Grade of\s+(?P<grade>[A-Z][+-]?))?"
+    r"(?P<conc>\s*\(\s*pre-req concurrent\s*\))?)"
+    r"|(?P<lp>\()|(?P<rp>\))|(?P<op>\b(?:and|or)\b)"
+)
+
+
+def _requirement_tokens_from_text(text: str) -> list[tuple]:
+    """Tokenize a collapsed prereq/coreq *text* string into the same tokens."""
+    tokens: list[tuple] = []
+    for m in RE_REQ_TOKEN_TEXT.finditer(text):
+        if m.group("op"):
+            tokens.append((m.group("op").upper(), None))
+        elif m.group("lp"):
+            tokens.append(("LP", None))
+        elif m.group("rp"):
+            tokens.append(("RP", None))
+        elif m.group("subj"):
+            tokens.append(("LEAF", {
+                "type": "course",
+                "subject": m.group("subj"),
+                "course_number": m.group("num"),
+                "min_grade": m.group("grade") or "",
+                "level": m.group("level") or "",
+                "concurrent": bool(m.group("conc")),
+            }))
+    return tokens
+
+
+def requirement_json_from_text(text: str) -> str:
+    """Backfill: build the boolean tree JSON from stored collapsed prereq text."""
+    if not text:
+        return ""
+    tree = _tree_from_tokens(_requirement_tokens_from_text(text))
+    return json.dumps(tree, ensure_ascii=False) if tree else ""
+
+
+def backfill_requirement_json(conn: sqlite3.Connection) -> int:
+    """Populate prerequisites_json/corequisites_json for rows that have the text
+    but not yet the tree (e.g. historical rows from before G3). No network."""
+    rows = conn.execute(
+        "SELECT crn, term_id, prerequisites, corequisites FROM section_details "
+        "WHERE (prerequisites != '' AND IFNULL(prerequisites_json,'') = '') "
+        "   OR (corequisites != '' AND IFNULL(corequisites_json,'') = '')"
+    ).fetchall()
+    updates = []
+    for crn, term_id, prereq, coreq in rows:
+        updates.append((
+            requirement_json_from_text(prereq or ""),
+            requirement_json_from_text(coreq or ""),
+            crn, term_id,
+        ))
+    if updates:
+        conn.executemany(
+            "UPDATE section_details SET prerequisites_json = ?, corequisites_json = ? "
+            "WHERE crn = ? AND term_id = ?",
+            updates,
+        )
+        conn.commit()
+    return len(updates)
+
+
+RE_CD_LEVELS = re.compile(
+    r"Levels:\s*(.+?)\s*(?:Schedule Types:|Course Attributes:|Restrictions:|Prerequisites:|$)",
+    re.S,
+)
+RE_CD_SCHED = re.compile(
+    r"Schedule Types:\s*(.+?)\s*(?:Course Attributes:|Grade Modes?:|Restrictions:|Prerequisites:|$)",
+    re.S,
+)
+RE_CD_DEPT_TAIL = re.compile(r"\s*[\w/&.\- ]+Department\s*$")
+RE_CD_BOILER = re.compile(r"you are following\.", re.I)
+
+
+def parse_catalog_detail(
+    raw_html: str | bytes, subject: str, course_number: str, term_id: str = "",
+) -> Optional[CatalogDetail]:
+    """Parse bwckctlg.p_disp_course_detail for course-level data (G2).
+
+    Returns None for a course-not-found page (which only carries the bottom
+    "Return to Previous" links cell).
+    """
+    tree = lxml_html.fromstring(raw_html)
+    cell = None
+    for c in tree.xpath('//td[@class="ntdefault"]'):
+        if c.xpath('.//span[@class="fieldlabeltext"]') or "Credit hours" in c.text_content():
+            cell = c
+            break
+    if cell is None:
+        return None
+
+    full = RE_WHITESPACE.sub(" ", cell.text_content())
+
+    department = ""
+    for t in cell.itertext():
+        s = t.strip()
+        if s.endswith("Department"):
+            department = s
+            break
+
+    m = RE_CD_LEVELS.search(full)
+    levels = m.group(1).strip() if m else ""
+    m = RE_CD_SCHED.search(full)
+    sched = m.group(1).strip() if m else ""
+    if department and department in sched:
+        sched = sched.replace(department, "").strip()
+    sched = RE_CD_DEPT_TAIL.sub("", sched).strip()
+
+    attrs = ""
+    am = re.search(r"Course Attributes:(.*)", full, re.S)
+    if am:
+        block = am.group(1)
+        b = RE_CD_BOILER.search(block)
+        if b:
+            block = block[b.end():]
+        for stop in ("Restrictions:", "Prerequisites:", "Corequisites:"):
+            j = block.find(stop)
+            if j >= 0:
+                block = block[:j]
+        attrs = RE_WHITESPACE.sub(" ", block).strip()
+
+    items, _ = extract_label_sections(
+        cell, ("Prerequisites", "Corequisites", "Restrictions")
+    )
+    return CatalogDetail(
+        subject=subject, course_number=course_number, term_id=term_id,
+        levels=levels, schedule_types=sched, course_attributes=attrs,
+        prerequisites=collapse_items(items["Prerequisites"]),
+        corequisites=collapse_items(items["Corequisites"]),
+        restrictions=collapse_items(items["Restrictions"]),
+    )
+
+
 def parse_detail_page(
-    raw_html: str, crn: str, term_id: str,
+    raw_html: str | bytes, crn: str, term_id: str,
 ) -> tuple[SectionDetail, list[CourseDependency]]:
     """Parse section detail page for prerequisites, coreqs, restrictions, fees."""
     tree = lxml_html.fromstring(raw_html)
@@ -866,71 +1532,40 @@ def parse_detail_page(
                     if desc:
                         fees_list.append({"description": desc, "amount": amt})
 
-    # ── Parse text sections (prereqs, coreqs, restrictions) from HTML ──
-    raw_html_str = etree.tostring(main_td, encoding="unicode")
+    # ── Parse labelled sections (prereqs, coreqs, restrictions) in one pass ──
+    items, links = extract_label_sections(
+        main_td, ("Prerequisites", "Corequisites", "Restrictions")
+    )
 
-    sections: dict[str, str] = {}
-    for m in RE_DETAIL_SECTION.finditer(raw_html_str):
-        label = m.group(1)
-        fragment_html = m.group(2)
-        try:
-            frag_tree = lxml_html.fromstring(f"<div>{fragment_html}</div>")
-            text = RE_WHITESPACE.sub(" ", frag_tree.text_content()).strip()
-            sections[label] = text
-        except Exception:
-            pass
-
-    prerequisites = sections.get("Prerequisites", "")
-    corequisites = sections.get("Corequisites", "")
-    restrictions = sections.get("Restrictions", "")
-
-    # ── Parse structured dependency links ──
+    # ── Structured dependency links (prerequisites first, then corequisites) ──
     deps: list[CourseDependency] = []
-
-    def extract_deps(label: str, dep_type: str):
-        pattern = re.compile(
-            rf'<span[^>]*class="fieldlabeltext"[^>]*>[^<]*{re.escape(label)}[^<]*</span>'
-            rf"(.*?)(?=<span[^>]*class="
-            rf'"fieldlabeltext"|<table|</td>)',
-            re.DOTALL | re.IGNORECASE,
-        )
-        m = pattern.search(raw_html_str)
-        if not m:
-            return
-        try:
-            frag_tree = lxml_html.fromstring(f"<div>{m.group(1)}</div>")
-        except Exception:
-            return
-        for a in frag_tree.xpath(".//a[@href]"):
-            link_text = a.text_content().strip()
-            parts = link_text.split()
+    for label, dep_type in (
+        ("Prerequisites", "prerequisite"),
+        ("Corequisites", "corequisite"),
+    ):
+        for a in links[label]:
+            parts = a.text_content().split()
             if len(parts) < 2:
                 continue
-            subj = parts[0]
-            crse = parts[1]
-            # Minimum grade from tail text
-            min_grade = ""
-            tail = (a.tail or "").strip()
-            grade_m = RE_MIN_GRADE.search(tail)
-            if grade_m:
-                min_grade = grade_m.group(1)
+            grade_m = RE_MIN_GRADE.search((a.tail or "").strip())
             deps.append(CourseDependency(
                 crn=crn, term_id=term_id, dep_type=dep_type,
-                subject=subj, course_number=crse, minimum_grade=min_grade,
+                subject=parts[0], course_number=parts[1],
+                minimum_grade=grade_m.group(1) if grade_m else "",
             ))
-
-    extract_deps("Prerequisites", "prerequisite")
-    extract_deps("Corequisites", "corequisite")
 
     detail = SectionDetail(
         crn=crn, term_id=term_id,
-        prerequisites=prerequisites,
-        corequisites=corequisites,
-        restrictions=restrictions,
+        prerequisites=collapse_items(items["Prerequisites"]),
+        corequisites=collapse_items(items["Corequisites"]),
+        restrictions=collapse_items(items["Restrictions"]),
         waitlist_capacity=waitlist_cap,
         waitlist_actual=waitlist_act,
         waitlist_remaining=waitlist_rem,
         fees=json.dumps(fees_list) if fees_list else "",
+        prerequisites_json=requirement_json(items["Prerequisites"]),
+        corequisites_json=requirement_json(items["Corequisites"]),
+        restrictions_json=parse_restrictions(items["Restrictions"]),
     )
 
     return detail, deps
@@ -944,19 +1579,10 @@ async def run(args: argparse.Namespace):
     conn = init_db(args.output, force=args.force)
 
     # Thread pool for CPU-bound HTML parsing (avoids blocking the event loop)
-    parse_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    parse_pool = concurrent.futures.ThreadPoolExecutor(max_workers=parse_pool_size())
     loop = asyncio.get_running_loop()
 
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(120.0),
-        follow_redirects=True,
-        http2=True,
-        headers={"User-Agent": "AUSCrawl/2.0 (academic-data-project)"},
-        limits=httpx.Limits(
-            max_connections=args.workers + 5,
-            max_keepalive_connections=args.workers + 5,
-        ),
-    ) as client:
+    async with make_client(args.workers) as client:
         t0 = time.monotonic()
 
         # ── Phase 1: Fetch semester list ──
@@ -1005,13 +1631,21 @@ async def run(args: argparse.Namespace):
                 async with subj_sem:
                     return await fetch_subjects(client, term_id)
 
+            # One flaky term must not abort the whole crawl: collect what we can.
             all_subj_lists = await asyncio.gather(
-                *(fetch_subj(s.term_id) for s in semesters)
+                *(fetch_subj(s.term_id) for s in semesters),
+                return_exceptions=True,
             )
+
+            subj_failures = sum(1 for r in all_subj_lists if isinstance(r, BaseException))
+            if subj_failures:
+                console.print(f"  [yellow]{subj_failures}[/] term(s) failed subject discovery (continuing)")
 
             # Deduplicate: keep the first (longest) long_name per code
             seen: dict[str, Subject] = {}
             for subj_list in all_subj_lists:
+                if isinstance(subj_list, BaseException):
+                    continue
                 for s in subj_list:
                     if s.short_name not in seen or len(s.long_name) > len(seen[s.short_name].long_name):
                         seen[s.short_name] = s
@@ -1035,7 +1669,7 @@ async def run(args: argparse.Namespace):
 
         # ── Phase 3: Fire all course requests concurrently ──
         console.print(f"[bold]Phase 3:[/] Crawling {len(semesters)} semesters ({args.workers} workers)...")
-        semaphore = asyncio.Semaphore(args.workers)
+        course_sem = asyncio.Semaphore(args.workers)
         results: list[tuple[Semester, list[Course]]] = []
         errors: list[str] = []
 
@@ -1054,14 +1688,17 @@ async def run(args: argparse.Namespace):
 
             async def fetch_batch(semester: Semester, params_template: list) -> list[Course]:
                 """Fetch one batch of courses for a semester."""
-                async with semaphore:
+                async with course_sem:
+                    if args.delay > 0:
+                        await asyncio.sleep(args.delay)
                     params = [("term_in", semester.term_id)] + params_template[1:]
                     resp = await request_with_retry(
-                        client, "POST", ENDPOINTS["courses"], form=params
+                        client, "POST", ENDPOINTS["courses"], form=params,
                     )
-                    # Parse in thread pool so HTTP I/O isn't blocked
+                    # Parse bytes in the thread pool so neither decoding nor
+                    # parsing blocks the event loop.
                     return await loop.run_in_executor(
-                        parse_pool, parse_courses, resp.text, semester.term_id
+                        parse_pool, parse_courses, resp.content, semester.term_id
                     )
 
             async def crawl_one(semester: Semester):
@@ -1081,9 +1718,6 @@ async def run(args: argparse.Namespace):
                     errors.append(f"{semester.term_name}: {e}")
                     results.append((semester, []))
                     progress.update(task, advance=1)
-
-                if args.delay > 0:
-                    await asyncio.sleep(args.delay)
 
             await asyncio.gather(*(crawl_one(s) for s in semesters))
 
@@ -1138,6 +1772,17 @@ async def run(args: argparse.Namespace):
                 c.subject for _, courses in results for c in courses
             } | {r[0] for r in conn.execute("SELECT DISTINCT subject FROM courses")})
 
+            # On --resume, don't re-fetch catalog for subjects we already have.
+            if args.resume:
+                done_subjects = {r[0] for r in conn.execute("SELECT DISTINCT subject FROM catalog")}
+                if done_subjects:
+                    before = len(all_subjects)
+                    all_subjects = [s for s in all_subjects if s not in done_subjects]
+                    console.print(
+                        f"  Resume: skipping catalog for [yellow]{before - len(all_subjects)}[/] "
+                        "subject(s) already present"
+                    )
+
             for term in sample_terms:
                 for subj in all_subjects:
                     subj_term_list.append((subj, term))
@@ -1156,12 +1801,43 @@ async def run(args: argparse.Namespace):
             )
             crn_term_list = sorted(crn_terms - existing_details)
 
-        if not subj_term_list and not crn_term_list:
+        # Catalog detail: one fetch per unique (subject, course_number), using the
+        # most recent term it was offered (course-level data is term-stable).
+        cd_list: list[tuple[str, str, str]] = []
+        if run_catalog:
+            course_term: dict[tuple[str, str], str] = {}
+            for semester, courses in results:
+                for c in courses:
+                    k = (c.subject, c.course_number)
+                    if k not in course_term or semester.term_id > course_term[k]:
+                        course_term[k] = semester.term_id
+            for subj, num, mx in conn.execute(
+                "SELECT subject, course_number, MAX(term_id) FROM courses "
+                "GROUP BY subject, course_number"
+            ):
+                k = (subj, num)
+                if k not in course_term or (mx or "") > course_term[k]:
+                    course_term[k] = mx
+            if args.resume:
+                done = set(conn.execute(
+                    "SELECT subject, course_number FROM catalog_detail"
+                ).fetchall())
+                for k in list(course_term):
+                    if k in done:
+                        del course_term[k]
+            cd_list = sorted((s, n, t) for (s, n), t in course_term.items())
+
+        if not subj_term_list and not crn_term_list and not cd_list:
             console.print("[bold]Phase 4+5:[/] Catalog and details already complete.")
         else:
-            # 10 workers for GET endpoints (higher causes excessive 429s after Phase 3)
-            detail_workers = min(args.workers, 10)
+            # GET endpoints are governed by a global rate limiter (req/s), not the
+            # worker count — so we run many workers to hide latency while AIMD keeps
+            # the aggregate rate under the server's 429 threshold.
+            detail_workers = min(args.workers, GET_CONCURRENCY)
             get_sem = asyncio.Semaphore(detail_workers)
+            get_rate = RateLimiter(
+                args.rate, max_rate=max(args.rate, GET_MAX_RATE), min_rate=GET_MIN_RATE,
+            )
 
             # ── Phase 4: Catalog ──
             if subj_term_list:
@@ -1183,6 +1859,8 @@ async def run(args: argparse.Namespace):
                     async def fetch_cat(subj: str, term_id: str):
                         nonlocal cat_errors
                         async with get_sem:
+                            if args.delay > 0:
+                                await asyncio.sleep(args.delay)
                             try:
                                 resp = await request_with_retry(
                                     client, "GET", ENDPOINTS["catalog"],
@@ -1194,9 +1872,10 @@ async def run(args: argparse.Namespace):
                                         "sel_divs": "", "sel_dept": "",
                                         "sel_attr": "",
                                     },
+                                    rate=get_rate,
                                 )
                                 entries = await loop.run_in_executor(
-                                    parse_pool, parse_catalog_page, resp.text
+                                    parse_pool, parse_catalog_page, resp.content
                                 )
                                 catalog_entries.extend(entries)
                             except Exception:
@@ -1210,6 +1889,59 @@ async def run(args: argparse.Namespace):
                 console.print(
                     f"  Catalog: [cyan]{cat_count:,}[/] entries"
                     + (f", [yellow]{cat_errors}[/] errors" if cat_errors else "")
+                )
+
+            # ── Phase 4b: Catalog course detail (attributes, course-level prereqs) ──
+            if cd_list:
+                console.print(f"[bold]Phase 4b:[/] Fetching {len(cd_list):,} course detail pages ({detail_workers}w)...")
+                cd_entries: list[CatalogDetail] = []
+                cd_errors = 0
+
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[bold blue]{task.description}"),
+                    BarColumn(),
+                    MofNCompleteColumn(),
+                    TextColumn("•"),
+                    TimeElapsedColumn(),
+                    TextColumn("•"),
+                    TimeRemainingColumn(),
+                    console=console,
+                ) as progress:
+                    cd_task = progress.add_task("Catalog detail", total=len(cd_list))
+
+                    async def fetch_cd(subj: str, num: str, term_id: str):
+                        nonlocal cd_errors
+                        async with get_sem:
+                            if args.delay > 0:
+                                await asyncio.sleep(args.delay)
+                            try:
+                                resp = await request_with_retry(
+                                    client, "GET", ENDPOINTS["catalog_detail"],
+                                    params={
+                                        "cat_term_in": term_id,
+                                        "subj_code_in": subj,
+                                        "crse_numb_in": num,
+                                    },
+                                    rate=get_rate,
+                                )
+                                cd = await loop.run_in_executor(
+                                    parse_pool, parse_catalog_detail,
+                                    resp.content, subj, num, term_id,
+                                )
+                                if cd is not None:
+                                    cd_entries.append(cd)
+                            except Exception:
+                                cd_errors += 1
+                            progress.update(cd_task, advance=1)
+
+                    await asyncio.gather(*(fetch_cd(s, n, t) for s, n, t in cd_list))
+
+                save_catalog_detail(conn, cd_entries)
+                cd_count = conn.execute("SELECT COUNT(*) FROM catalog_detail").fetchone()[0]
+                console.print(
+                    f"  Catalog detail: [cyan]{cd_count:,}[/] courses"
+                    + (f", [yellow]{cd_errors}[/] errors" if cd_errors else "")
                 )
 
             # ── Phase 5: Section Details ──
@@ -1232,13 +1964,16 @@ async def run(args: argparse.Namespace):
                     async def fetch_det(c: str, t: str):
                         nonlocal det_errors
                         async with get_sem:
+                            if args.delay > 0:
+                                await asyncio.sleep(args.delay)
                             try:
                                 resp = await request_with_retry(
                                     client, "GET", ENDPOINTS["detail"],
                                     params={"term_in": t, "crn_in": c},
+                                    rate=get_rate,
                                 )
                                 detail, deps = await loop.run_in_executor(
-                                    parse_pool, parse_detail_page, resp.text, c, t,
+                                    parse_pool, parse_detail_page, resp.content, c, t,
                                 )
                                 all_details.append(detail)
                                 all_deps.extend(deps)
@@ -1272,6 +2007,12 @@ async def run(args: argparse.Namespace):
             t_extra = time.monotonic() - t_extra
             console.print(f"  Phase 4+5 time: {t_extra:.1f}s")
 
+        # ── Backfill structured prereq/coreq trees for any rows still missing
+        #    them (e.g. historical rows from before G3) — pure re-parse, no network.
+        backfilled = backfill_requirement_json(conn)
+        if backfilled:
+            console.print(f"[bold]Backfill:[/] structured prereq trees for [cyan]{backfilled:,}[/] section(s)")
+
         elapsed = time.monotonic() - t0
 
         # ── Summary ──
@@ -1282,7 +2023,9 @@ async def run(args: argparse.Namespace):
             "subjects": conn.execute("SELECT COUNT(*) FROM subjects").fetchone()[0],
             "levels": conn.execute("SELECT COUNT(*) FROM levels").fetchone()[0],
             "attributes": conn.execute("SELECT COUNT(*) FROM attributes").fetchone()[0],
+            "section_instructors": conn.execute("SELECT COUNT(*) FROM section_instructors").fetchone()[0],
             "catalog": conn.execute("SELECT COUNT(*) FROM catalog").fetchone()[0],
+            "catalog_detail": conn.execute("SELECT COUNT(*) FROM catalog_detail").fetchone()[0],
             "details": conn.execute("SELECT COUNT(*) FROM section_details").fetchone()[0],
             "dependencies": conn.execute("SELECT COUNT(*) FROM course_dependencies").fetchone()[0],
         }
@@ -1318,8 +2061,14 @@ def main():
         help=f"Max concurrent requests (default: {DEFAULT_WORKERS})",
     )
     parser.add_argument(
+        "--rate", type=float, default=DEFAULT_RATE,
+        help=f"Target GET requests/sec (AIMD ceiling; default: {DEFAULT_RATE}). "
+             "Lower for extra safety, raise to go faster at the risk of 429s.",
+    )
+    parser.add_argument(
         "--delay", type=float, default=DEFAULT_DELAY,
-        help=f"Seconds between requests (default: {DEFAULT_DELAY})",
+        help="Extra seconds to pause before each request (default: 0; pacing is "
+             "normally handled by --rate)",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
