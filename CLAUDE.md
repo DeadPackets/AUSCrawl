@@ -23,6 +23,7 @@ uv run --project . python crawl.py [options]
 uv run --project . python crawl.py --latest          # only the newest term (cheapest real run)
 uv run --project . python crawl.py -t 202620 202510  # specific term IDs
 uv run --project . python crawl.py --resume          # skip terms already in the DB
+uv run --project . python crawl.py --import-legacy aus_courses.db  # Banner 8 leftovers
 uv run --project . python crawl.py --force           # delete the DB and start over
 uv run --project . python crawl.py --no-details      # skip the expensive phase 5
 uv run --project . python crawl.py --rate 5          # go gentler than the default 10 req/s
@@ -77,26 +78,33 @@ Parsers are pure functions over `str | bytes` and do no I/O, so every parser tes
 - **`request_with_retry` is the single choke point for all HTTP.** It retries only 403/408/429/5xx (permanent 4xx fails fast), uses equal-jitter exponential backoff, honors `Retry-After`, and detects Cloudflare/F5 interstitials via `is_blocked`. New endpoints go through it.
 - **Banner 9 HTML-escapes text inside its JSON.** `courseTitle` arrives as `Qur&#39;an`. Every text field goes through `_txt()` in `parse_json.py`. Forgetting this on a new field is a silent data bug.
 - **Legacy column formats are contractual.** `days` is `MW`/`TR` (R = Thursday, U = Sunday), `start_time` is `11:00 am`, `classroom` is `Building Name Room` or `TBA`, `date_range` is `Aug 24, 2026 - Dec 10, 2026`. `parse_json.py` has a helper per format and `tests/test_db_save.py` pins them. Changing one breaks every published query.
-- **Chronological `first_seen`.** `save_sections` sorts by `term_id` before inserting so `INSERT OR IGNORE` keeps the earliest occurrence. `fix_first_seen` backfills `subjects` and `instructors` from a `MIN(term_id)`.
-- **Migration is additive only.** `init_db` runs `migrate_schema` (ALTER TABLE ADD COLUMN, idempotent) before `CREATE TABLE IF NOT EXISTS`, so pointing `-o` at a copy of `aus_courses.db` upgrades it in place with every row preserved.
-- **Saves upsert, they do not `INSERT OR IGNORE`.** Upgrading the shipped snapshot is the documented path, and ignoring conflicts would leave every Banner 9 column empty on the 75,000 rows that already exist — a bug that unit tests missed and only a full-scale run exposed. `_COURSE_UPSERT` refreshes everything Banner serves, with two deliberate exceptions: `registration_dates` (no source) and any stored `title` longer than the incoming one (Banner 8 section-title suffixes). `first_seen` is never updated, which is what keeps the term-ordered insert correct. `save_catalog` updates only `_CATALOG_UPDATE_COLS` so it cannot clobber the detail columns that `save_course_details` owns.
+- **Chronological `first_seen`.** `save_sections` sorts by `term_id` before inserting, so the first write of an instructor or subject is its earliest occurrence and the upserts never touch `first_seen`. `fix_first_seen` backfills from a `MIN(term_id)` afterwards.
+- **Saves upsert; they never `INSERT OR IGNORE`.** Ignoring conflicts silently skipped every pre-existing row in an earlier draft, so a re-crawl left the new columns empty — a bug unit tests on an empty database could not see. `save_catalog` updates only the columns the catalog search owns so it cannot reset the detail columns `save_course_details` writes, and `save_sections` deletes meeting blocks beyond the current count so a shrunken schedule leaves no ghosts.
 - **Stable browser fingerprint.** One current Chrome UA with matching `Sec-Fetch-*` / `Sec-CH-UA` / `Referer`. Do **not** add user-agent rotation — inconsistent identities are more anomalous than one consistent one. The same reasoning caps the session pool: a real browser is one session, so many short-lived sessions from one IP is a bot signal. `SESSION_POOL_SIZE` is sized for correctness (terms cannot share a session), not throughput.
 - **Failures recover at the right layer.** `request_with_retry` retries a request; `fetch_all_pages` retries the whole *term* (`resetDataForm`, rebind, 3 attempts with backoff) because a bind that did not take cannot be fixed by repeating the same GET; `run_terms` keeps the successful terms when one fails and the CLI exits non-zero. An hour of crawling is never discarded for one glitchy term, and nothing fails silently.
 
 ## Schema notes
 
-16 tables defined inline in the `SCHEMA` string in `db.py`. `courses` is the fact table; uniqueness is `(crn, term_id, class_type, days, start_time)` so a section with several meeting blocks produces several rows. `term_id` (e.g. `202620` = Spring 2026) is the join key across most tables.
+11 tables plus 7 views, all defined inline in the `SCHEMA` string in `db.py`. The tables model what Banner 9 serves; the views carry the Banner 8 table names.
 
-- `meetings(crn, term_id, meeting_index, …)` — the unflattened form of the schedule columns in `courses`.
-- `catalog_versions(subject, course_number, term_effective, …)` — full course history. `catalog` and `catalog_detail` are projections of its newest row per course, refreshed by `refresh_flat_catalog` / `refresh_catalog_detail`, so a re-crawl can only move them forward.
-- `prereq_rules(subject, course_number, term_effective, seq, …)` — one row per row of Banner's prerequisite table, including test-score prerequisites. `catalog_versions.prerequisites_json` holds the same thing as a boolean tree built by `parse_html.prereq_tree`.
+- `sections(crn, term_id)` is the section fact table — **one row per section**, so a changed room or time updates it instead of leaving a duplicate behind. `meetings(crn, term_id, meeting_index)` holds the schedule blocks.
+- `course_versions(subject, course_number, term_effective)` is the catalog fact table: one row per version of a course, carrying description, hours, levels, grading modes and the prerequisite text and JSON. `prereq_rules` holds Banner's prerequisite table row by row, including test-score prerequisites.
+- `instructors` is keyed by `banner_id`, which Banner 9 supplies for every faculty entry and is 1:1 with names.
+
+### The compatibility views
+
+`courses`, `catalog`, `catalog_detail`, `section_details`, `course_dependencies`, `semesters` and `levels` are **views**, not tables. They reproduce the old column shapes and value formats — `MW` days, `11:00 am` times, `Building Name Room`, `TBA` for an unassigned room or instructor, `is_lab` by exact equality with `'Lab'`.
+
+They must stay views. An earlier draft of this rewrite kept them as real tables, and `course_dependencies`, `section_details` and `levels` were never written by the Banner 9 crawler — 230,000 rows that would have gone on returning confident answers frozen at the last Banner 8 crawl. A breaking change fails loudly; that failed quietly. **If you add a column to a view, do not "optimize" it into a table.**
+
+The legacy value formats live in `_time_12h`, `_date_long`, `_DAYS` and `_CLASSROOM` at the top of `db.py`, and `tests/test_schema.py` pins each one. The whole `courses` view is verified against the shipped Banner 8 database for Fall 2015: 1,694 rows, exact key-for-key match.
 
 ### Known gaps
 
-- `registration_dates` has no Banner 9 source. The crawler never writes over existing values; new terms leave it empty.
-- Section-title suffixes (`Calculus III (Take it with MTH 203R Sec.1)`) are not exposed by Banner 9. Historical rows keep them.
-- `schedule_type` used to hold the literal string `"Schedule Type"` — an old parser bug. It now holds the real value.
+- `registration_dates` and Banner 8 section-title suffixes exist in no Banner 9 endpoint. `--import-legacy <old.db>` copies them once into `legacy_section_extras`, which the `courses` view joins. Without that import both are empty.
+- `courses.schedule_type` used to hold the literal string `"Schedule Type"` for every row — an old parser bug capturing the label instead of the value. It now holds the real value.
+- `section_details.fees` and `corequisites_json` are always empty: AUS publishes no fee data and Banner 9 gives corequisites as prose, not a table.
 
-**Refreshing the shipped DB:** copy `aus_courses.db`, run `uv run --project . python crawl.py -o <copy>` (~1 hour for all 101 terms at the default rate), cross-check a few terms with `scripts/crosscheck.py`, then checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)` + `journal_mode=DELETE`) and swap the file in.
+**Refreshing the shipped DB:** crawl into a fresh file with `--import-legacy aus_courses.db` (~1 hour for all 101 terms at the default rate), cross-check a few terms with `scripts/crosscheck.py`, then checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)` + `journal_mode=DELETE`) and swap the file in.
 
 The Banner 9 endpoint reference lives in README.md under "Banner Technical Details"; the design rationale is in `docs/superpowers/specs/2026-08-14-banner9-rewrite-design.md`.

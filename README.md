@@ -10,9 +10,9 @@
     <img src="https://img.shields.io/badge/HTTP%2F2-async-blue?style=flat-square" alt="HTTP/2 Async">
     <img src="https://img.shields.io/badge/database-114%20MB-orange?style=flat-square" alt="Database 114 MB">
     <br/>
-    <img src="https://img.shields.io/badge/courses-75%2C467-green?style=flat-square" alt="75,467 courses">
+    <img src="https://img.shields.io/badge/sections-74%2C000%2B-green?style=flat-square" alt="74,000+ sections">
     <img src="https://img.shields.io/badge/semesters-101-green?style=flat-square" alt="101 semesters">
-    <img src="https://img.shields.io/badge/instructors-1%2C987-green?style=flat-square" alt="1,987 instructors">
+    <img src="https://img.shields.io/badge/Banner-9%20JSON%20API-green?style=flat-square" alt="Banner 9 JSON API">
     <img src="https://img.shields.io/badge/made%20with-%E2%9D%A4-red?style=flat-square" alt="Made with love">
   </p>
 </p>
@@ -20,13 +20,13 @@
 ---
 
 > [!WARNING]
-> **Do not run the crawler unless you know what you are doing.** The crawler makes tens of thousands of requests to AUS Banner and can easily overwhelm the server if misconfigured, which can result in service disruption and get you in trouble with the university. A pre-built database (`aus_courses.db`) is already included in this repository with a complete snapshot of all course data since 2005 — **use that instead.**
+> **Do not run the crawler unless you know what you are doing.** A full crawl makes ~41,000 requests to AUS Banner and can overwhelm the server if misconfigured, which can result in service disruption and get you in trouble with the university. A pre-built database (`aus_courses.db`) is already included in this repository with a complete snapshot of all course data since 2005 — **use that instead.**
 
 ## What is this?
 
-AUSCrawl is a fast, async web crawler that scrapes [AUS Banner](https://banner.aus.edu/) for course data across **every semester since 2005** and stores it in an SQLite database. But more importantly, it ships a **ready-to-use database** (as a [release](https://github.com/DeadPackets/AUSCrawl/releases/latest) download) so you never have to run the crawler yourself.
+AUSCrawl is a fast, async client for [AUS Banner 9](https://register.aus.edu/StudentRegistrationSsb/ssb/term/termSelection?mode=search)'s public JSON API, pulling course data across **every semester since 2005** and stores it in an SQLite database. But more importantly, it ships a **ready-to-use database** (as a [release](https://github.com/DeadPackets/AUSCrawl/releases/latest) download) so you never have to run the crawler yourself.
 
-Written in Python. Single file. ~15 minutes for a full crawl of 74,000+ course sections, catalog descriptions, prerequisites, and more.
+Written in Python. Around an hour for a full crawl of 74,000+ sections, every course version, prerequisites and seat counts — roughly 41,000 requests, paced deliberately slowly.
 
 ---
 
@@ -35,18 +35,16 @@ Written in Python. Single file. ~15 minutes for a full crawl of 74,000+ course s
 Every [release](https://github.com/DeadPackets/AUSCrawl/releases/latest) ships **`aus_courses.db`** (gzipped, ~16 MB), a complete SQLite database containing every course, instructor, prerequisite, and catalog description from AUS Banner since Fall 2005. Just download it, `gunzip`, and start building. (It's distributed as a release asset rather than committed to the repo so clones stay small.)
 
 <table>
-<tr><th>Table</th><th>Records</th><th>Description</th></tr>
-<tr><td><code>courses</code></td><td><strong>75,467</strong></td><td>Every course section ever offered</td></tr>
-<tr><td><code>course_dependencies</code></td><td><strong>156,512</strong></td><td>Prerequisite/corequisite links with minimum grades</td></tr>
-<tr><td><code>section_details</code></td><td><strong>73,778</strong></td><td>Prerequisites, corequisites, restrictions, waitlist, fees (+ structured JSON)</td></tr>
-<tr><td><code>section_instructors</code></td><td><strong>72,476</strong></td><td>Every instructor per section (incl. co-taught), with primary flag</td></tr>
-<tr><td><code>catalog</code></td><td><strong>3,046</strong></td><td>Course descriptions, credit/lecture/lab hours</td></tr>
-<tr><td><code>catalog_detail</code></td><td><strong>3,532</strong></td><td>Course-level attributes (degree-requirement tags), schedule types, levels</td></tr>
-<tr><td><code>instructors</code></td><td><strong>1,987</strong></td><td>All instructors with emails and first appearance</td></tr>
-<tr><td><code>semesters</code></td><td><strong>101</strong></td><td>Every term from Fall 2005 to the present</td></tr>
-<tr><td><code>subjects</code></td><td><strong>98</strong></td><td>All subject codes (COE, ENG, MTH, etc.)</td></tr>
-<tr><td><code>attributes</code></td><td><strong>231</strong></td><td>Course attributes</td></tr>
-<tr><td><code>levels</code></td><td><strong>9</strong></td><td>Academic levels (Undergraduate, Graduate, etc.)</td></tr>
+<tr><th>Table</th><th>Description</th></tr>
+<tr><td><code>sections</code></td><td>Every section ever offered, with real seat counts</td></tr>
+<tr><td><code>meetings</code></td><td>Every meeting block: days, building, room, dates</td></tr>
+<tr><td><code>course_versions</code></td><td>Every version of every course, with prerequisites and restrictions</td></tr>
+<tr><td><code>prereq_rules</code></td><td>The prerequisite expression, row by row, incl. placement-test scores</td></tr>
+<tr><td><code>section_instructors</code></td><td>Every instructor per section (incl. co-taught), with primary flag</td></tr>
+<tr><td><code>section_attributes</code></td><td>Degree-requirement tags per section</td></tr>
+<tr><td><code>instructors</code></td><td>All instructors with Banner ID, email and first appearance</td></tr>
+<tr><td><code>terms</code> / <code>subjects</code> / <code>attributes</code></td><td>Reference lists</td></tr>
+<tr><td><em>+ 7 compatibility views</em></td><td><code>courses</code>, <code>catalog</code>, <code>catalog_detail</code>, <code>section_details</code>, <code>course_dependencies</code>, <code>semesters</code>, <code>levels</code></td></tr>
 </table>
 
 ---
@@ -131,7 +129,7 @@ ORDER BY subject, course_number;
 
 -- What did CMP 305 require in 2015 versus today?
 SELECT term_effective, prerequisites
-FROM catalog_versions
+FROM course_versions
 WHERE subject = 'CMP' AND course_number = '305'
 ORDER BY term_effective;
 
@@ -162,25 +160,44 @@ ORDER BY term_effective DESC, seq;
 
 ## Database Schema
 
-16 normalized tables with indexes. Every table and column that existed before Banner 9 is still present and still populated, so queries written against older releases keep working.
+The database is **11 normalized tables plus 7 compatibility views**. The tables model
+what Banner 9 actually serves; the views carry the old table names, so queries written
+against earlier releases keep working.
 
-**Core tables:**
-- `semesters` — term ID and name (e.g. `202620`, `Spring 2026`)
-- `subjects` — subject codes and full names (e.g. `COE`, `Computer Engineering`)
-- `courses` — every course section with schedule, instructor, classroom, and now **real seat counts** (`enrollment`, `max_enrollment`, `seats_available_count`), `building` / `room` split out, `part_of_term`, and cross-listing
-- `instructors` — deduplicated names, emails, `first_seen`, and **Banner IDs**
-- `levels` — academic levels (Undergraduate, Graduate, etc.)
-- `attributes` — course attributes with `first_seen`
+### Tables
 
-**Extended tables:**
-- `meetings` — *new*. One row per meeting block with structured day booleans, `building` / `building_name` / `room`, `start_date` / `end_date`, and `hours_week`. The `courses` columns flatten this; here it is unflattened
-- `catalog_versions` — *new*. The full history of every course, keyed `(subject, course_number, term_effective)`. This is what makes "what did CMP 305 require in 2015?" answerable
-- `prereq_rules` — *new*. One row per row of Banner's prerequisite table, so the boolean expression is queryable without parsing JSON. Includes **test-score prerequisites** (SAT, placement exams) that the old text parser could not represent at all
-- `catalog` — the latest version of each course: description, credit/lecture/lab/other/bill hours, college, department
-- `catalog_detail` — latest course-level attributes, schedule types, levels, **grading modes**, and prerequisites/corequisites/restrictions
-- `section_details` — per-section prerequisites, corequisites, restrictions, plus `prerequisites_json` (boolean AND/OR trees) and `restrictions_json` (typed include/exclude groups)
-- `section_instructors` — every instructor on each section including co-taught ones, with `is_primary` and `banner_id`
-- `course_dependencies` — flat prerequisite/corequisite links with minimum grades
+| Table | Key | Holds |
+|---|---|---|
+| `terms` | `term_id` | Term code and name |
+| `subjects` | `code` | Subject codes, names, `first_seen` |
+| `instructors` | `banner_id` | Name, email, `first_seen` — keyed by Banner's own stable ID |
+| `attributes` | `code` | Attribute codes and descriptions |
+| `course_versions` | `subject, course_number, term_effective` | **One row per version of a course**: description, college, department, all five hour types, levels, grading modes, schedule types, prerequisites, corequisites, restrictions, and the JSON expression trees |
+| `prereq_rules` | `… , seq` | One row per row of Banner's prerequisite table, including **test-score prerequisites** (SAT, placement exams) the old text parser could not represent |
+| `sections` | `crn, term_id` | Section identity, credits, campus, **real seat counts**, waitlist, cross-listing |
+| `meetings` | `crn, term_id, meeting_index` | Per meeting block: day booleans, building/room, start/end date, hours per week |
+| `section_instructors` | `crn, term_id, banner_id` | Every instructor incl. co-taught, with `is_primary` |
+| `section_attributes` | `crn, term_id, code` | Degree-requirement tags per section |
+| `legacy_section_extras` | `crn, term_id` | The two Banner 8 fields no Banner 9 endpoint serves — see below |
+
+### Compatibility views
+
+`courses`, `catalog`, `catalog_detail`, `section_details`, `course_dependencies`,
+`semesters` and `levels` are **views**, reproducing the column shapes and value formats
+of the pre-Banner-9 database — `MW` days, `11:00 am` times, `Building Name Room`,
+`TBA` for an unassigned room or instructor.
+
+Being views is the point. In an earlier draft of this rewrite they were kept as real
+tables, and three of them — `course_dependencies` (156k rows), `section_details` (74k)
+and `levels` — were never written by the Banner 9 crawler. They would have gone on
+returning confident answers frozen at the final Banner 8 crawl. As views they are
+derived on read and cannot drift.
+
+Verified against the shipped Banner 8 database for Fall 2015: **1,694 rows, an exact
+key-for-key match, zero rows missing or extra.** The only field differences are the new
+data being more correct — 150 sections whose `credits` the old crawler recorded as
+`NULL`, a level AUS has since renamed, and 25 instructor names Banner now spells
+differently.
 
 ---
 
@@ -220,8 +237,13 @@ Measured headroom is high: 40 requests at concurrency 16 completed at ~174 req/s
 
 Two fields the Banner 8 scraper collected have **no equivalent anywhere in Banner 9**:
 
-- `registration_dates` — no endpoint exposes it (`getRegistrationDates` and friends all 404). Existing values in the shipped database are preserved; the crawler never writes an empty string over them.
-- Section-title suffixes — Banner 8 showed titles like `Calculus III (Take it with MTH 203R Sec.1)`. Banner 9 returns only the catalog title. Historical rows keep their richer titles; new rows get the catalog title.
+- `registration_dates` — no endpoint exposes it (`getRegistrationDates` and friends all 404).
+- Section-title suffixes — Banner 8 showed titles like `Calculus III (Take it with MTH 203R Sec.1)`. Banner 9 returns only the catalog title.
+
+Both are irreplaceable, so `--import-legacy <old.db>` copies them once out of a
+Banner 8 snapshot into `legacy_section_extras`, which the `courses` view joins. They
+live in one table named for exactly what they are rather than diluting the rest of the
+schema.
 
 One field is now **fixed rather than lost**: `schedule_type` used to hold the literal string `"Schedule Type"` for every row — the old parser captured the column label instead of the value. It now holds the real value (`Lecture`, `Lab`, …).
 
@@ -252,6 +274,7 @@ uv run python crawl.py [options]
 | `-o`, `--output` | SQLite output path (default: `aus_data.db`) |
 | `-t`, `--terms` | Only crawl specific term IDs (e.g. `202620 202510`) |
 | `--rate` | Target requests/sec, AIMD-paced (default: 10, ceiling 30). Lower for extra safety |
+| `--import-legacy` | Copy `registration_dates` and Banner 8 section titles out of an old database |
 | `--latest` | Only crawl the most recent semester |
 | `--resume` | Skip semesters and course versions already in the database |
 | `--force` | Delete the database and start over |
