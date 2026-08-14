@@ -292,3 +292,18 @@ def test_a_section_with_no_instructor_reads_tba(tmp_path):
     assert conn.execute(
         "SELECT instructor_name, instructor_email FROM courses WHERE crn='noinstr'"
     ).fetchone() == ("TBA", "")
+
+
+def test_every_sql_example_in_the_readme_still_runs(tmp_path):
+    """Documentation that does not execute is worse than none. Row counts do not
+    matter here; parsing and column resolution do."""
+    import pathlib
+    import re
+
+    conn = seeded(tmp_path)
+    readme = pathlib.Path(__file__).resolve().parent.parent / "README.md"
+    blocks = re.findall(r"```sql\n(.*?)```", readme.read_text(), re.S)
+    statements = [s.strip() for b in blocks for s in b.split(";") if s.strip()]
+    assert len(statements) >= 8, "expected the README to still carry example queries"
+    for sql in statements:
+        conn.execute(sql).fetchall()
