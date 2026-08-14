@@ -3,6 +3,7 @@
 Run:  uv run --project . python tests/capture_banner9.py
 """
 
+import gzip
 import pathlib
 import sys
 import time
@@ -29,6 +30,18 @@ DETAIL_EPS = {
 }
 
 
+# The section and catalog pages are ~2.4 MB of highly repetitive JSON; gzipping
+# them keeps clones small, and conftest.read_b9 decompresses transparently.
+GZIP_OVER = 100_000
+
+
+def write(name: str, data: bytes) -> None:
+    if len(data) > GZIP_OVER:
+        (OUT / (name + ".gz")).write_bytes(gzip.compress(data, 9))
+    else:
+        (OUT / name).write_bytes(data)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     c = httpx.Client(http2=True, headers=dict(config.BROWSER_HEADERS),
@@ -36,21 +49,21 @@ def main():
     manifest = []
 
     r = c.get(config.EP["terms"], params={"searchTerm": "", "offset": 1, "max": 500})
-    (OUT / "terms.json").write_bytes(r.content)
+    write("terms.json", r.content)
     manifest.append(f"terms.json={config.EP['terms']}")
 
     c.get(config.EP["term_selection"], params={"mode": "search"})
     c.post(config.EP["term_search"], params={"mode": "search"}, data={"term": TERM})
     r = c.get(config.EP["sections"], params={"txt_term": TERM, "pageOffset": 0,
                                              "pageMaxSize": config.PAGE_SIZE})
-    (OUT / "sections_202710_p0.json").write_bytes(r.content)
+    write("sections_202710_p0.json", r.content)
     manifest.append(f"sections_202710_p0.json=term {TERM} offset 0")
 
     for key, ref in (("ref_subject", "subjects"), ("ref_instructor", "instructors"),
                      ("ref_attribute", "attributes")):
         r = c.get(config.EP[key], params={"searchTerm": "", "term": TERM,
                                           "offset": 1, "max": 5000})
-        (OUT / f"ref_{ref}_202710.json").write_bytes(r.content)
+        write(f"ref_{ref}_202710.json", r.content)
         manifest.append(f"ref_{ref}_202710.json={key} term {TERM}")
         time.sleep(0.3)
 
@@ -59,7 +72,7 @@ def main():
            data={"term": TERM})
     r = c.get(config.EP["catalog"], params={"txt_term": TERM, "pageOffset": 0,
                                             "pageMaxSize": config.PAGE_SIZE})
-    (OUT / "catalog_202710_p0.json").write_bytes(r.content)
+    write("catalog_202710_p0.json", r.content)
     manifest.append(f"catalog_202710_p0.json=catalog term {TERM} offset 0")
 
     for subj, num in COURSES:
@@ -67,7 +80,7 @@ def main():
             r = c.post(config.EP[ep_key], data={"term": TERM, "subjectCode": subj,
                                                 "courseNumber": num})
             name = f"{tag}_{subj}{num}.html"
-            (OUT / name).write_bytes(r.content)
+            write(name, r.content)
             manifest.append(f"{name}={ep_key} {subj} {num} term {TERM}")
             time.sleep(0.3)
 

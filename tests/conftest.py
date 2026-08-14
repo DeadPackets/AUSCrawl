@@ -1,3 +1,4 @@
+import gzip
 import sys
 from pathlib import Path
 
@@ -16,4 +17,8 @@ def b9_dir() -> Path:
 
 
 def read_b9(name: str) -> bytes:
+    """Fixture bytes. The large JSON pages are stored gzipped to keep clones small."""
+    gz = B9 / (name + ".gz")
+    if gz.exists():
+        return gzip.decompress(gz.read_bytes())
     return (B9 / name).read_bytes()
