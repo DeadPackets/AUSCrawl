@@ -41,20 +41,23 @@ class TermSession:
         self.rate = rate
         self.term: str | None = None
         self.mode: str | None = None
+        self._ever_bound = False
 
     async def reset(self, mode: str) -> None:
-        """Clear any search state left by a previous term on this session."""
-        await request_with_retry(
-            self.client, "POST", config.EP["reset"],
-            params={"mode": mode}, rate=self.rate, max_retries=2,
-        )
+        """Clear any search state left by a previous term on this session.
+
+        A session that has never bound has no state to clear, so the request is
+        skipped — over a 101-term crawl that and the omitted termSelection GET
+        (POST /term/search binds on its own, verified live) save ~400 requests.
+        """
+        if self._ever_bound:
+            await request_with_retry(
+                self.client, "POST", config.EP["reset"],
+                params={"mode": mode}, rate=self.rate, max_retries=2,
+            )
         self.term = None
 
     async def bind(self, term_id: str, mode: str) -> None:
-        await request_with_retry(
-            self.client, "GET", config.EP["term_selection"],
-            params={"mode": mode}, rate=self.rate,
-        )
         await request_with_retry(
             self.client, "POST", config.EP["term_search"],
             params={"mode": mode},
@@ -64,6 +67,7 @@ class TermSession:
         )
         self.term = term_id
         self.mode = mode
+        self._ever_bound = True
 
     async def fetch_page(self, endpoint_key: str, term_id: str, offset: int,
                          max_retries: int | None = None) -> bytes:

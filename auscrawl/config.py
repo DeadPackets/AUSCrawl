@@ -24,10 +24,13 @@ EP = {
 PAGE_SIZE = 500
 
 DEFAULT_RATE = 10.0
-MAX_RATE = 20.0
+# AIMD climbs toward this when Banner stays healthy; measured headroom is ~174
+# req/s with zero 429s, so 30 keeps a 5x safety margin and one throttle halves it.
+MAX_RATE = 30.0
 MIN_RATE = 2.0
 SESSION_POOL_SIZE = 6
-DETAIL_CONCURRENCY = 12
+# Must exceed MAX_RATE x fragment latency or the semaphore starves the limiter.
+DETAIL_CONCURRENCY = 24
 MAX_RETRIES = 5
 RETRY_BASE = 2.0
 DETAIL_BATCH_SIZE = 2000

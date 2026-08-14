@@ -102,11 +102,14 @@ _DETAIL_PARTS = ("prereqs", "coreqs", "restrictions", "course_attributes",
 async def fetch_course_detail(client: httpx.AsyncClient, term_id: str, subject: str,
                               course_number: str, term_effective: str,
                               rate: RateLimiter | None,
-                              max_retries: int = DETAIL_RETRIES) -> CourseDetail:
+                              max_retries: int = DETAIL_RETRIES,
+                              fetch_description: bool = True) -> CourseDetail:
     """Fetch the six catalog fragments for one course version.
 
     The catalog search truncates courseDescription to 100 characters; the
-    getCourseDescription fragment is the only full-text source.
+    getCourseDescription fragment is the only full-text source. It is skipped
+    when fetch_description is False — the caller saw the inline copy was null,
+    and inline null and an empty fragment read the same record (verified live).
 
     Banner answers 500 for a course that does not exist in the given term, which is
     permanent rather than transient. A fragment that will not load is recorded in
@@ -126,8 +129,10 @@ async def fetch_course_detail(client: httpx.AsyncClient, term_id: str, subject: 
             missing.append(key)
             return b""
 
-    prereq, coreq, restr, attrs, cat, desc = await asyncio.gather(
-        *(one(k) for k in _DETAIL_PARTS))
+    parts = _DETAIL_PARTS if fetch_description else _DETAIL_PARTS[:-1]
+    fetched = await asyncio.gather(*(one(k) for k in parts))
+    prereq, coreq, restr, attrs, cat = fetched[:5]
+    desc = fetched[5] if fetch_description else b""
 
     rules = parse_html.parse_prereq_rules(prereq)
     details = parse_html.parse_catalog_details(cat)
@@ -146,5 +151,5 @@ async def fetch_course_detail(client: httpx.AsyncClient, term_id: str, subject: 
         prerequisites_json=parse_html.prereq_json(rules),
         restrictions_json=parse_html.restrictions_json(restr),
         rules=rules,
-        missing_parts=[p for p in _DETAIL_PARTS if p in missing],
+        missing_parts=[p for p in parts if p in missing],
     )

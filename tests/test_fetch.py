@@ -97,6 +97,22 @@ async def test_fetch_course_detail_merges_six_fragments():
     assert len(d.description) > 100 and "<" not in d.description
 
 
+async def test_description_fetch_is_skipped_when_the_inline_copy_was_null():
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        return httpx.Response(200, content=read_b9("coreqs_ACC201.html"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        d = await fetch.fetch_course_detail(c, "202710", "AUS", "100", "202210",
+                                            None, fetch_description=False)
+
+    assert len(paths) == 5
+    assert not any(p.endswith("getCourseDescription") for p in paths)
+    assert d.description == "" and d.missing_parts == []
+
+
 async def test_one_failing_fragment_does_not_lose_the_others():
     """Banner answers 500 for a course that does not exist in a term. That must
     degrade to a missing fragment, never abort the whole crawl."""

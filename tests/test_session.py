@@ -29,23 +29,37 @@ def test_verify_term_ignores_catalog_records_that_have_no_term_key():
     session.verify_term(payload, "202710")
 
 
-async def test_bind_issues_term_selection_then_term_search():
+async def test_bind_is_a_single_term_search_post():
+    """POST /term/search binds on its own (verified live); no termSelection GET."""
     seen = []
 
     def handler(request):
         seen.append((request.method, request.url.path, dict(request.url.params)))
-        if request.url.path.endswith("/termSelection"):
-            return httpx.Response(200, text="<html></html>")
         return httpx.Response(200, json={"fwdURL": "/x"})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         s = session.TermSession(client)
         await s.bind("202710", "search")
 
-    assert seen[0][0] == "GET" and seen[0][1].endswith("/term/termSelection")
+    assert len(seen) == 1
+    assert seen[0][0] == "POST" and seen[0][1].endswith("/term/search")
     assert seen[0][2]["mode"] == "search"
-    assert seen[1][0] == "POST" and seen[1][1].endswith("/term/search")
-    assert seen[1][2]["mode"] == "search"
+
+
+async def test_reset_is_skipped_until_the_session_has_bound_once():
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"fwdURL": "/x"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        s = session.TermSession(client)
+        await s.reset("search")            # fresh session: nothing to clear
+        assert seen == []
+        await s.bind("202710", "search")
+        await s.reset("search")            # now there is state to clear
+        assert [p for p in seen if p.endswith("/resetDataForm")] != []
 
 
 async def test_fetch_page_refuses_a_term_the_session_is_not_bound_to():

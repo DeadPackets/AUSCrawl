@@ -33,23 +33,27 @@ def select_terms(all_terms: list[Semester], opts, existing: set[str]) -> list[Se
     return terms
 
 
-def pending_versions(catalog_by_term, done: set) -> list[tuple[str, str, str, str]]:
-    """Unique (subject, course_number, term_effective, query_term) needing details.
+def pending_versions(catalog_by_term,
+                     done: set) -> list[tuple[str, str, str, str, bool]]:
+    """Unique (subject, course_number, term_effective, query_term, has_description).
 
-    query_term is the newest crawled term where the version appeared. Banner keys
-    descriptions, attributes and catalog details by their own term ranges inside a
-    course version's lifetime, so querying at term_effective returns the version as
-    first published and silently misses everything amended later.
+    query_term is the newest crawled term where the version appeared.
+
+    Banner keys descriptions, attributes and catalog details by their own term
+    ranges inside a course version's lifetime, so querying at term_effective returns
+    the version as first published and silently misses everything amended later.
+    has_description mirrors the inline (truncated) copy at that newest term; when it
+    is null the full-text fragment is empty too, so the fetch can be skipped.
     """
-    latest: dict[tuple[str, str, str], str] = {}
+    latest: dict[tuple[str, str, str], tuple[str, bool]] = {}
     for term_id, courses in catalog_by_term:
         for c in courses:
             key = (c.subject, c.course_number, c.term_effective)
             if not c.term_effective or key in done:
                 continue
-            if term_id > latest.get(key, ""):
-                latest[key] = term_id
-    return [(*key, term) for key, term in latest.items()]
+            if term_id > latest.get(key, ("", False))[0]:
+                latest[key] = (term_id, bool(c.description))
+    return [(*key, term, has_desc) for key, (term, has_desc) in latest.items()]
 
 
 async def run_terms(pool, terms: list[str], handler) -> tuple[list[str], list[str]]:
@@ -177,10 +181,12 @@ async def _run(opts) -> list[str]:
         with _progress() as bar:
             task = bar.add_task("Details", total=len(pending))
 
-            async def one_detail(subject, number, term_effective, query_term):
+            async def one_detail(subject, number, term_effective, query_term,
+                                 has_desc):
                 async with sem:
                     d = await fetch.fetch_course_detail(
-                        client, query_term, subject, number, term_effective, rate)
+                        client, query_term, subject, number, term_effective, rate,
+                        fetch_description=has_desc)
                 if d.missing_parts:
                     incomplete.append(f"{subject}{number}@{term_effective}")
                 batch.append(d)

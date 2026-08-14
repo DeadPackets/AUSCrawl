@@ -50,17 +50,19 @@ def test_pending_versions_dedupes_across_terms_and_skips_done():
     pending = pipeline.pending_versions(
         [("202610", [acc, cmp_]), ("202710", [acc])],
         done={("CMP", "305", "201510")})
-    assert pending == [("ACC", "201", "202610", "202710")]
+    assert pending == [("ACC", "201", "202610", "202710", False)]
 
 
 def test_pending_versions_queries_at_the_newest_term_the_version_was_seen():
     """Banner keys descriptions and attributes by their own term ranges, so the
     fragment queries must use the newest term the version is in effect."""
-    acc = models.CatalogCourse(subject="ACC", course_number="301", title="T",
+    old = models.CatalogCourse(subject="ACC", course_number="301", title="T",
                                term_effective="201210")
+    new = models.CatalogCourse(subject="ACC", course_number="301", title="T",
+                               term_effective="201210", description="Begins a")
     pending = pipeline.pending_versions(
-        [("202710", [acc]), ("201210", [acc]), ("201610", [acc])], done=set())
-    assert pending == [("ACC", "301", "201210", "202710")]
+        [("202710", [new]), ("201210", [old]), ("201610", [old])], done=set())
+    assert pending == [("ACC", "301", "201210", "202710", True)]
 
 
 def test_pending_versions_skips_rows_with_no_effective_term():
