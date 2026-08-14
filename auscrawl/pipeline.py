@@ -57,6 +57,11 @@ def _progress() -> Progress:
 
 
 async def run(opts) -> None:
+    await _run(opts)
+    console.print("[bold green]Done.[/bold green]")
+
+
+async def _run(opts) -> None:
     conn = db.init_db(opts.output, force=opts.force)
     rate = RateLimiter(opts.rate, max_rate=config.MAX_RATE, min_rate=config.MIN_RATE)
 
@@ -149,4 +154,3 @@ async def run(opts) -> None:
         console.print(f"[yellow]Details:[/yellow] {len(incomplete)} of {len(pending)} "
                       f"course versions had at least one fragment Banner would not "
                       f"serve, e.g. {', '.join(incomplete[:3])}")
-    console.print("[bold green]Done.[/bold green]")
