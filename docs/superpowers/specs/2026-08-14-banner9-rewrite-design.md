@@ -2,7 +2,7 @@
 
 Date: 2026-08-14
 Branch: `banner9-rewrite`
-Status: approved, pending implementation
+Status: implemented, with the schema decision revised mid-build (see Revision)
 
 ## Why
 
@@ -254,7 +254,35 @@ Fingerprint hygiene:
 - No robots.txt exists on `register.aus.edu` or `banner.aus.edu` (both 404), so there
   are no crawl directives to honor. The rate limit is a self-imposed courtesy.
 
-## Schema
+## Revision: the schema decision was reversed
+
+The section below records the original decision — extend the Banner 8 schema and stay
+backward compatible. **It was reversed during implementation**, and the reasoning is
+worth keeping because the trigger was not the one either option anticipated.
+
+Compatibility was already broken, silently. The Banner 9 crawler never writes
+`course_dependencies` (156,512 rows), `section_details` (73,778) or `levels`. Keeping
+them as real tables meant they would return confident answers frozen at the final
+Banner 8 crawl forever, and two of the four example queries in README.md join them. A
+breaking change fails loudly; that failed quietly, which is worse.
+
+The redesign keeps 11 normalized tables — `sections`, `meetings`, `course_versions`,
+`prereq_rules`, `section_instructors`, `section_attributes` and the reference lists —
+and re-exposes every old table name as a **view** over them. Old queries keep working
+*and* cannot go stale. `sections` is keyed `(crn, term_id)`, so a changed room updates
+the row instead of accumulating a duplicate, which the old key
+`(crn, term_id, class_type, days, start_time)` could not do.
+
+`registration_dates` and Banner 8 section-title suffixes exist in no Banner 9 endpoint
+and cannot be regenerated, so `--import-legacy` copies them once into
+`legacy_section_extras`, which the `courses` view joins.
+
+Verified against the shipped Banner 8 database for Fall 2015: 1,694 rows, exact
+key-for-key match, zero missing or extra. The only field differences are the new data
+being more correct — 150 sections whose `credits` the old crawler left `NULL`, a level
+AUS renamed, and 25 instructor names Banner now spells differently.
+
+## Schema (original decision, superseded)
 
 Decision: **extend, stay backward compatible**. Every existing table and column keeps
 its current meaning and stays populated, so the queries in README.md and any
