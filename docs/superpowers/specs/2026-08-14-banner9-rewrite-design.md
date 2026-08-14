@@ -356,6 +356,21 @@ every new column and `CREATE TABLE IF NOT EXISTS` for new tables, so pointing th
 crawler at a copy of the shipped `aus_courses.db` upgrades it rather than rebuilding
 it. No destructive migration; `--force` still drops and recreates.
 
+**Widening the schema is not enough — the saves must upsert.** The first full-scale
+run exposed this: with `INSERT OR IGNORE`, all 75,000 pre-existing rows were skipped,
+so only 220 rows ever received a seat count, no row received a cross-listing, and
+75,396 rows kept the old `schedule_type` parser bug. Unit tests on an empty database
+could not see it. Saves therefore upsert, refreshing everything Banner serves, with
+two exceptions carried by explicit `ON CONFLICT` clauses:
+
+- `registration_dates` is never written, because Banner 9 has no source for it.
+- `title` is replaced only when the incoming title is longer than the stored one, so
+  Banner 8 section-title suffixes survive while genuinely absent titles get filled.
+
+`first_seen` is likewise never updated, which is what keeps the term-ordered insert
+producing a correct earliest-occurrence value. `save_catalog` updates only the columns
+it owns so it cannot reset the detail columns written by phase 5.
+
 ## Module structure
 
 `crawl.py` is 2,112 lines and every phase inside it is being replaced. Splitting it is

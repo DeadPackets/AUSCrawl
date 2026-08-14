@@ -55,7 +55,8 @@ def main(argv=None) -> int:
     # httpx logs every request at INFO, which drowns the progress bars.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
-        asyncio.run(run(args))
+        if asyncio.run(run(args)):
+            return 1
     except KeyboardInterrupt:
         logging.getLogger("auscrawl").warning("interrupted; progress is committed")
         return 130

@@ -281,7 +281,7 @@ Phase 5 dominates, and it is only affordable because details are fetched **per c
 - **Stable browser fingerprint** — one current Chrome identity with matching `Sec-Fetch-*` and `Sec-CH-UA` headers. User-agent *rotation* is itself a detection signal, so it is deliberately avoided
 - **Graceful degradation** — a course version whose fragment Banner refuses to serve is recorded as incomplete and reported at the end, never allowed to abort the crawl
 - **Crash resilience** — each phase commits as it finishes; the detail phase batch-saves every 2,000 courses; `--resume` skips completed work
-- **Additive migration** — pointing `-o` at an existing database upgrades it in place with `ALTER TABLE`, so the shipped snapshot keeps all its rows
+- **Additive migration and in-place refresh** — pointing `-o` at an existing database upgrades it with `ALTER TABLE` and then *refreshes* existing rows rather than skipping them, so the shipped snapshot gains every Banner 9 column while keeping its rows, its `registration_dates`, and its richer Banner 8 section titles
 
 ### Tests
 

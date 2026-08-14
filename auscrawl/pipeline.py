@@ -46,6 +46,23 @@ def pending_versions(catalog_courses, done: set) -> list[tuple[str, str, str]]:
     return out
 
 
+async def run_terms(pool, terms: list[str], handler) -> tuple[list[str], list[str]]:
+    """Run every term, keeping the successes when one of them fails.
+
+    A single glitchy term must not throw away an hour of crawling; the failures are
+    returned so the caller can report them and the operator can --resume.
+    """
+    results = await pool.map_terms(terms, handler)
+    ok, failed = [], []
+    for term, result in zip(terms, results, strict=True):
+        if isinstance(result, BaseException):
+            log.error("term %s failed: %s", term, result)
+            failed.append(term)
+        else:
+            ok.append(term)
+    return ok, failed
+
+
 def _progress() -> Progress:
     return Progress(
         TextColumn("[bold blue]{task.description}"),
@@ -56,12 +73,18 @@ def _progress() -> Progress:
     )
 
 
-async def run(opts) -> None:
-    await _run(opts)
-    console.print("[bold green]Done.[/bold green]")
+async def run(opts) -> int:
+    """Returns the number of terms that could not be crawled."""
+    failed = await _run(opts) or []
+    if failed:
+        console.print(f"[bold red]Finished with {len(failed)} failed terms:[/bold red] "
+                      f"{', '.join(failed)}\nRe-run with --resume to fill them in.")
+    else:
+        console.print("[bold green]Done.[/bold green]")
+    return len(failed)
 
 
-async def _run(opts) -> None:
+async def _run(opts) -> list[str]:
     conn = db.init_db(opts.output, force=opts.force)
     rate = RateLimiter(opts.rate, max_rate=config.MAX_RATE, min_rate=config.MIN_RATE)
 
@@ -73,7 +96,7 @@ async def _run(opts) -> None:
         terms = select_terms(all_terms, opts, db.done_terms(conn))
         console.print(f"[green]Crawling:[/green] {len(terms)} terms")
         if not terms:
-            return
+            return []
 
         with _progress() as bar:
             task = bar.add_task("Reference", total=len(terms))
@@ -95,12 +118,16 @@ async def _run(opts) -> None:
             return len(rows)
 
         async with SessionPool(config.SESSION_POOL_SIZE, rate) as pool:
-            counts = await pool.map_terms([s.term_id for s in terms], one_term)
-    console.print(f"[green]Sections:[/green] {sum(counts)} rows")
+            ok, failed_sections = await run_terms(
+                pool, [s.term_id for s in terms], one_term)
+    console.print(f"[green]Sections:[/green] {len(ok)} terms crawled")
+    if failed_sections:
+        console.print(f"[red]Sections:[/red] {len(failed_sections)} terms failed: "
+                      f"{', '.join(failed_sections)} — re-run with --resume")
     db.fix_first_seen(conn)
 
     if opts.no_catalog:
-        return
+        return failed_sections
 
     catalog_courses: list = []
     with _progress() as bar:
@@ -115,17 +142,24 @@ async def _run(opts) -> None:
             return len(rows)
 
         async with SessionPool(config.SESSION_POOL_SIZE, rate) as pool:
-            counts = await pool.map_terms([s.term_id for s in terms], one_catalog)
-    console.print(f"[green]Catalog:[/green] {sum(counts)} rows")
+            ok, failed_catalog = await run_terms(
+                pool, [s.term_id for s in terms], one_catalog)
+    console.print(f"[green]Catalog:[/green] {len(ok)} terms crawled, "
+                  f"{len(catalog_courses)} rows")
+    if failed_catalog:
+        console.print(f"[red]Catalog:[/red] {len(failed_catalog)} terms failed: "
+                      f"{', '.join(failed_catalog)} — re-run with --resume")
+
+    failed = sorted(set(failed_sections) | set(failed_catalog))
 
     if opts.no_details:
-        return
+        return failed
 
     done = set() if opts.force else db.done_course_versions(conn)
     pending = pending_versions(catalog_courses, done)
     console.print(f"[green]Details:[/green] {len(pending)} course versions to fetch")
     if not pending:
-        return
+        return failed
 
     sem = asyncio.Semaphore(config.DETAIL_CONCURRENCY)
     batch: list = []
@@ -154,3 +188,4 @@ async def _run(opts) -> None:
         console.print(f"[yellow]Details:[/yellow] {len(incomplete)} of {len(pending)} "
                       f"course versions had at least one fragment Banner would not "
                       f"serve, e.g. {', '.join(incomplete[:3])}")
+    return failed

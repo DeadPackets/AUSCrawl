@@ -35,7 +35,7 @@ async def test_fetch_all_pages_walks_the_offsets_until_total_is_reached():
     calls = []
 
     def handler(request):
-        if "/term/" in request.url.path:
+        if "/term/" in request.url.path or "resetDataForm" in request.url.path:
             return httpx.Response(200, json={"fwdURL": "/x"})
         offset = int(request.url.params["pageOffset"])
         calls.append(offset)
@@ -55,7 +55,7 @@ async def test_fetch_all_pages_walks_the_offsets_until_total_is_reached():
 
 async def test_fetch_all_pages_stops_on_an_empty_page():
     def handler(request):
-        if "/term/" in request.url.path:
+        if "/term/" in request.url.path or "resetDataForm" in request.url.path:
             return httpx.Response(200, json={"fwdURL": "/x"})
         return httpx.Response(200, json={"totalCount": 5000, "data": []})
 
@@ -146,6 +146,8 @@ async def test_an_empty_first_page_triggers_one_rebind_before_giving_up():
     state = {"bound": False}
 
     def handler(request):
+        if request.url.path.endswith("resetDataForm"):
+            return httpx.Response(200, text="")
         if request.url.path.endswith("/term/search"):
             binds["n"] += 1
             state["bound"] = binds["n"] >= 2      # the first bind silently fails
@@ -159,7 +161,8 @@ async def test_an_empty_first_page_triggers_one_rebind_before_giving_up():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
         sess = session.TermSession(c)
         rows = await fetch.fetch_all_pages(sess, "sections", "202710",
-                                           parse_sections, mode="search")
+                                           parse_sections, mode="search",
+                                           backoff=lambda _: 0)
 
     assert binds["n"] == 2
     assert len(rows) > 0
@@ -167,7 +170,7 @@ async def test_an_empty_first_page_triggers_one_rebind_before_giving_up():
 
 async def test_a_term_that_stays_empty_raises_rather_than_recording_zero():
     def handler(request):
-        if "/term/" in request.url.path:
+        if "/term/" in request.url.path or "resetDataForm" in request.url.path:
             return httpx.Response(200, json={"fwdURL": "/x"})
         return httpx.Response(200, json={"totalCount": 0, "data": None})
 
@@ -175,7 +178,8 @@ async def test_a_term_that_stays_empty_raises_rather_than_recording_zero():
         sess = session.TermSession(c)
         with pytest.raises(fetch.EmptyTerm):
             await fetch.fetch_all_pages(sess, "sections", "202710",
-                                        parse_sections, mode="search")
+                                        parse_sections, mode="search",
+                                        backoff=lambda _: 0)
 
 
 async def test_a_failing_page_rebinds_and_retries_the_term():
@@ -184,6 +188,8 @@ async def test_a_failing_page_rebinds_and_retries_the_term():
     state = {"binds": 0}
 
     def handler(request):
+        if request.url.path.endswith("resetDataForm"):
+            return httpx.Response(200, text="")
         if request.url.path.endswith("/term/search"):
             state["binds"] += 1
             return httpx.Response(200, json={"fwdURL": "/x"})
@@ -196,7 +202,8 @@ async def test_a_failing_page_rebinds_and_retries_the_term():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
         sess = session.TermSession(c)
         rows = await fetch.fetch_all_pages(sess, "catalog", "202710",
-                                           parse_sections, mode="courseSearch")
+                                           parse_sections, mode="courseSearch",
+                                           backoff=lambda _: 0)
 
     assert state["binds"] == 2
     assert len(rows) > 0
@@ -204,7 +211,7 @@ async def test_a_failing_page_rebinds_and_retries_the_term():
 
 async def test_a_term_that_fails_both_attempts_raises():
     def handler(request):
-        if "/term/" in request.url.path:
+        if "/term/" in request.url.path or "resetDataForm" in request.url.path:
             return httpx.Response(200, json={"fwdURL": "/x"})
         return httpx.Response(500, text="boom")
 
@@ -212,4 +219,35 @@ async def test_a_term_that_fails_both_attempts_raises():
         sess = session.TermSession(c)
         with pytest.raises((fetch.EmptyTerm, RuntimeError)):
             await fetch.fetch_all_pages(sess, "catalog", "202710",
-                                        parse_sections, mode="courseSearch")
+                                        parse_sections, mode="courseSearch",
+                                        backoff=lambda _: 0)
+
+
+async def test_the_term_retry_is_patient_and_resets_stale_search_state():
+    """Failures here were transient and load-related, so the term retry gets three
+    attempts, and each rebind clears any search state left by the previous term."""
+    seen = {"resets": 0, "binds": 0}
+
+    def handler(request):
+        p = request.url.path
+        if p.endswith("resetDataForm"):
+            seen["resets"] += 1
+            return httpx.Response(200, text="")
+        if p.endswith("/term/search"):
+            seen["binds"] += 1
+            return httpx.Response(200, json={"fwdURL": "/x"})
+        if p.endswith("/termSelection"):
+            return httpx.Response(200, text="")
+        if seen["binds"] < 3:                       # two transient failures
+            return httpx.Response(200, json={"totalCount": 0, "data": None})
+        return httpx.Response(200, json=json.loads(read_b9("sections_202710_p0.json")))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        sess = session.TermSession(c)
+        rows = await fetch.fetch_all_pages(sess, "sections", "202710",
+                                           parse_sections, mode="search",
+                                           backoff=lambda _: 0)
+
+    assert seen["binds"] == 3
+    assert seen["resets"] >= 2, "each rebind must clear the previous search state"
+    assert len(rows) > 0

@@ -59,3 +59,26 @@ def test_pending_versions_skips_rows_with_no_effective_term():
     courses = [models.CatalogCourse(subject="ACC", course_number="201", title="T",
                                     term_effective="")]
     assert pipeline.pending_versions(courses, done=set()) == []
+
+
+async def test_one_failing_term_does_not_discard_the_rest_of_the_crawl():
+    """A 70-minute crawl must not be thrown away because a single term glitched."""
+    from auscrawl import fetch
+
+    async def handler(sess, term_id):
+        if term_id == "202411":
+            raise fetch.EmptyTerm("simulated transient failure")
+        return term_id
+
+    ok, failed = await pipeline.run_terms(
+        _FakePool(), ["202710", "202411", "202610"], handler)
+
+    assert ok == ["202710", "202610"]
+    assert failed == ["202411"]
+
+
+class _FakePool:
+    async def map_terms(self, terms, handler):
+        import asyncio
+        return await asyncio.gather(*(handler(None, t) for t in terms),
+                                    return_exceptions=True)

@@ -42,6 +42,14 @@ class TermSession:
         self.term: str | None = None
         self.mode: str | None = None
 
+    async def reset(self, mode: str) -> None:
+        """Clear any search state left by a previous term on this session."""
+        await request_with_retry(
+            self.client, "POST", config.EP["reset"],
+            params={"mode": mode}, rate=self.rate, max_retries=2,
+        )
+        self.term = None
+
     async def bind(self, term_id: str, mode: str) -> None:
         await request_with_retry(
             self.client, "GET", config.EP["term_selection"],
@@ -111,4 +119,5 @@ class SessionPool:
             finally:
                 self._free.put_nowait(sess)
 
-        return await asyncio.gather(*(one(t) for t in terms))
+        return await asyncio.gather(*(one(t) for t in terms),
+                                    return_exceptions=True)

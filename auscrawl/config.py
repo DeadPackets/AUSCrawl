@@ -6,6 +6,7 @@ EP = {
     "terms": f"{BASE}/classSearch/getTerms",
     "term_selection": f"{BASE}/term/termSelection",
     "term_search": f"{BASE}/term/search",
+    "reset": f"{BASE}/classSearch/resetDataForm",
     "sections": f"{BASE}/searchResults/searchResults",
     "catalog": f"{BASE}/courseSearchResults/courseSearchResults",
     "ref_subject": f"{BASE}/classSearch/get_subject",

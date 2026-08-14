@@ -7,7 +7,7 @@ from collections.abc import Callable
 import httpx
 
 from . import config, parse_html
-from .http import RateLimiter, request_with_retry
+from .http import RateLimiter, backoff_delay, request_with_retry
 from .models import CourseDetail
 from .parse_json import parse_code_list, parse_terms
 from .session import TermSession
@@ -24,6 +24,7 @@ DETAIL_RETRIES = 2
 # Search pages get few HTTP-level retries because the real recovery is the term-level
 # rebind in fetch_all_pages, not another identical request.
 PAGE_RETRIES = 2
+TERM_ATTEMPTS = 3
 
 
 async def fetch_terms(client: httpx.AsyncClient, rate: RateLimiter | None):
@@ -47,7 +48,8 @@ class EmptyTerm(RuntimeError):
 
 
 async def fetch_all_pages(sess: TermSession, endpoint_key: str, term_id: str,
-                          parser: Callable, mode: str) -> list:
+                          parser: Callable, mode: str,
+                          backoff: Callable[[int], float] = backoff_delay) -> list:
     """Bind the term, then page through the endpoint until totalCount is covered.
 
     A bind that does not take shows up two ways, and neither is fixable by retrying
@@ -58,10 +60,16 @@ async def fetch_all_pages(sess: TermSession, endpoint_key: str, term_id: str,
     * the catalog answers HTTP 500.
 
     Every AUS term has rows, so either symptom means rebind and start the term over.
+    Observed failures were transient and load-related rather than deterministic, so
+    the retry is patient: three attempts, backoff between them, and a resetDataForm
+    to clear whatever search state the session's previous term left behind.
     """
     last_error: Exception | None = None
-    for attempt in (1, 2):
+    for attempt in range(1, TERM_ATTEMPTS + 1):
         try:
+            if attempt > 1:
+                await asyncio.sleep(backoff(attempt))
+            await sess.reset(mode)
             await sess.bind(term_id, mode)
             out: list = []
             offset = 0
