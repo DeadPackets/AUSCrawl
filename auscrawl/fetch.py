@@ -71,16 +71,24 @@ async def fetch_all_pages(sess: TermSession, endpoint_key: str, term_id: str,
                 await asyncio.sleep(backoff(attempt))
             await sess.reset(mode)
             await sess.bind(term_id, mode)
-            out: list = []
-            offset = 0
-            while True:
-                raw = await sess.fetch_page(endpoint_key, term_id, offset,
-                                            max_retries=PAGE_RETRIES)
-                total, rows = parser(raw, term_id)
-                out.extend(rows)
-                offset += config.PAGE_SIZE
-                if offset >= total or not rows:
-                    break
+            raw = await sess.fetch_page(endpoint_key, term_id, 0,
+                                        max_retries=PAGE_RETRIES)
+            total, rows = parser(raw, term_id)
+            out: list = list(rows)
+            if rows and total > config.PAGE_SIZE:
+                # Paging within a bound term is stateless (verified live: the
+                # concurrent union matches the sequential walk), so the remaining
+                # offsets fetch in parallel and the term costs ~2 round trips.
+                others = await asyncio.gather(
+                    *(sess.fetch_page(endpoint_key, term_id, off,
+                                      max_retries=PAGE_RETRIES)
+                      for off in range(config.PAGE_SIZE, total, config.PAGE_SIZE)),
+                    return_exceptions=True)
+                for got in others:
+                    if isinstance(got, BaseException):
+                        raise got
+                    _, rows = parser(got, term_id)
+                    out.extend(rows)
             if total or out:
                 return out
             log.warning("%s for term %s came back empty; rebinding (attempt %d)",

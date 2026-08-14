@@ -20,13 +20,13 @@
 ---
 
 > [!WARNING]
-> **Do not run the crawler unless you know what you are doing.** A full crawl makes ~48,000 requests to AUS Banner and can overwhelm the server if misconfigured, which can result in service disruption and get you in trouble with the university. A pre-built database (`aus_courses.db`) is already included in this repository with a complete snapshot of all course data since 2005 — **use that instead.**
+> **Do not run the crawler unless you know what you are doing.** A full crawl makes ~42,000 requests to AUS Banner and can overwhelm the server if misconfigured, which can result in service disruption and get you in trouble with the university. A pre-built database (`aus_courses.db`) is already included in this repository with a complete snapshot of all course data since 2005 — **use that instead.**
 
 ## What is this?
 
 AUSCrawl is a fast, async client for [AUS Banner 9](https://register.aus.edu/StudentRegistrationSsb/ssb/term/termSelection?mode=search)'s public JSON API, pulling course data across **every semester since 2005** and stores it in an SQLite database. But more importantly, it ships a **ready-to-use database** (as a [release](https://github.com/DeadPackets/AUSCrawl/releases/latest) download) so you never have to run the crawler yourself.
 
-Written in Python. Around an hour for a full crawl of 74,000+ sections, every course version, prerequisites and seat counts — roughly 48,000 requests, paced deliberately slowly.
+Written in Python. Around 25 minutes for a full crawl of 74,000+ sections, every course version, prerequisites and seat counts — roughly 42,000 requests, adaptively paced to stay polite.
 
 ---
 
@@ -212,7 +212,7 @@ Base URL: `https://register.aus.edu/StudentRegistrationSsb/ssb`
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/classSearch/getTerms` | GET | All term codes and names — stateless |
-| `/term/termSelection?mode=…` | GET | Sets the session's search mode |
+| `/term/termSelection?mode=…` | GET | The term-picker UI page; not required for binding (`POST /term/search` binds on its own) |
 | `/term/search?mode=…` | POST | **Binds a term to the session** |
 | `/searchResults/searchResults` | GET | Sections, 500 per page, with meetings, faculty, seats, attributes |
 | `/courseSearchResults/courseSearchResults` | GET | Catalog, 500 per page, descriptions inline but truncated to 100 chars |
@@ -285,7 +285,7 @@ uv run python crawl.py [options]
 
 ### How It Works
 
-Five phases, roughly **48,000 requests** for all 101 terms — down from ~95,000 under Banner 8:
+Five phases, roughly **42,000 requests** for all 101 terms — down from ~95,000 under Banner 8:
 
 | Phase | Requests | What it does |
 |---|---|---|
@@ -293,7 +293,7 @@ Five phases, roughly **48,000 requests** for all 101 terms — down from ~95,000
 | 2. Reference | ~200 | Subject and attribute lists per term |
 | 3. Sections | ~250 | Pool of sessions; per term, bind + `ceil(n/500)` pages |
 | 4. Catalog | ~450 | Same pattern; inline descriptions are truncated to 100 chars |
-| 5. Details | ~44,000 | 6 stateless POSTs per unique `(subject, course#, term_effective)`, incl. the full description |
+| 5. Details | ~40,000 | up to 6 stateless POSTs per unique `(subject, course#, term_effective)`; the description POST is skipped when the catalog's inline copy was null |
 
 Phase 5 dominates, and it is only affordable because details are fetched **per course version** rather than per section — roughly 8,000 versions instead of 74,000 sections.
 
