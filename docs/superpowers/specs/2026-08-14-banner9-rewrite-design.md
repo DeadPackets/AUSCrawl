@@ -28,9 +28,9 @@ Measured against the shipped `aus_courses.db` (73,778 sections, 101 terms):
 |---|---|---|
 | Sections | ~10,000 | ~250 |
 | Catalog | ~9,000 | ~450 |
-| Details | ~74,000 | ~29,000 |
+| Details | ~74,000 | ~40,000 |
 | Reference | included above | ~300 |
-| **Total** | **~95,000** | **~30,000** |
+| **Total** | **~95,000** | **~41,000** |
 
 The section endpoint returns 500 records per response, so one term costs
 1 bind + `ceil(sections/500)` pages — four requests for a 1,814-section term.
@@ -105,7 +105,7 @@ The one difference was a cosmetic `General Requirements:` label.
 
 AUS does not use per-section prerequisite overrides. The crawler fetches details at
 **catalog level only**, keyed by `(subject, courseNumber, termEffective)`. This is what
-turns 74,000 requests into 29,000.
+turns 74,000 requests into 40,000.
 
 ## Endpoint reference
 
@@ -125,6 +125,7 @@ Base: `https://register.aus.edu/StudentRegistrationSsb/ssb`
 | POST | `/courseSearchResults/getCorequisites` | same | HTML fragment |
 | POST | `/courseSearchResults/getRestrictions` | same | HTML fragment |
 | POST | `/courseSearchResults/getCourseAttributes` | same | HTML fragment |
+| POST | `/courseSearchResults/getCourseCatalogDetails` | same | HTML — Levels, Grading Modes, Schedule Types |
 
 `pageMaxSize` silently clamps to 500; requesting 2000 returns 500 records.
 
@@ -149,17 +150,52 @@ Fields present in the JSON but empty across all of Fall 2026, so not modelled:
 2. Reference   3 requests per term (subject, instructor, attribute)  ~300
 3. Sections    pool of sessions; per term: bind + ceil(n/500) pages  ~250
 4. Catalog     pool of sessions; per term: bind + ceil(n/500) pages  ~450
-5. Details     shared session; 4 POSTs per unique (subj, num, termEff)  ~29,000
+5. Details     shared session; 5 POSTs per unique (subj, num, termEff)  ~40,000
 ```
+
+The five detail endpoints are `getPrerequisites`, `getCorequisites`, `getRestrictions`,
+`getCourseAttributes` and `getCourseCatalogDetails`.
 
 Phase 5 dominates. Measured over an 11-term sample spread across the full range:
 5,325 unique `(subject, courseNumber, termEffective)` triples and 3,432 unique
 `(subject, courseNumber)` pairs. Extrapolated to 101 terms: roughly 7,000–9,000
-triples, so 28,000–36,000 detail requests.
+triples, so 35,000–45,000 detail requests.
 
 Each phase commits as it completes. Phase 5 batch-commits so an interrupted run
 resumes without redoing work. `--resume` skips terms already present and triples
 already in `catalog_versions`.
+
+## Legacy column mapping and the one real data loss
+
+The existing `courses` columns must keep their exact current formats so published
+queries keep working. Observed formats and their new sources:
+
+| Column | Current format | New source |
+|---|---|---|
+| `days` | `MW`, `TR`, `U`, `WS` | `monday`..`sunday` booleans, joined as `M T W R F S U` (R = Thursday, U = Sunday) |
+| `start_time` / `end_time` | `11:00 am`, `1:45 pm` | `beginTime` `"1100"` / `endTime` `"1215"`, converted to 12-hour lowercase, no leading zero |
+| `classroom` | `School of Business Administrtn 1104` | `buildingDescription + " " + room` |
+| `date_range` | `Aug 24, 2026 - Dec 10, 2026` | `startDate` / `endDate` (`08/24/2026`) reformatted |
+| `class_type` | `Class` | `meetingTypeDescription` |
+| `seats_available` | `0` / `1` | `seatsAvailable > 0` |
+| `levels` | `Graduate, Post Bachelor, Undergraduate` | `getCourseCatalogDetails` Levels section |
+| `attributes` | comma-joined descriptions | `sectionAttributes[].description` |
+| `is_lab` | `0` / `1` | `scheduleTypeDescription` or `meetingTypeDescription` containing `Lab` |
+| `registration_dates` | `Apr 13, 2026 to Aug 31, 2026` | **no source — see below** |
+
+`schedule_type` currently holds the literal string `"Schedule Type"` for every row —
+the old parser captured the label instead of the value. The new crawler writes the real
+value (`Lecture`, `Lab`, …). This changes existing data, and it is a fix, not a
+regression; it is called out in the README.
+
+`registration_dates` has no equivalent anywhere in Banner 9's public endpoints.
+`getRegistrationDates`, `getSectionRegistrationDates` and `getPartOfTermDates` all 404.
+The crawler therefore **never writes an empty string over an existing
+`registration_dates` value**; historical values in the shipped database are preserved
+and new terms leave the column empty. This is documented as a known gap.
+
+`getCourseCatalogDetails` also yields **grading modes**, which the old scraper never
+captured — stored on `catalog_versions.grade_modes`.
 
 ## Politeness and detection avoidance
 
@@ -170,7 +206,7 @@ an F5 ASM (`TS01...` cookies). Neither challenged a plain HTTP/2 client.
 Headroom is not permission. The defaults are deliberately far below what the server
 tolerates:
 
-- **Default target 10 req/s**, `--rate` to override. Full crawl ≈ 60 minutes.
+- **Default target 10 req/s**, `--rate` to override. Full crawl ≈ 70 minutes.
 - Global token-bucket limiter pacing request *starts*, carried over from the current
   design. It paces the aggregate, so worker count does not change the load.
 - AIMD: 429/503/challenge halves the rate; sustained success adds `+1/rate` per
@@ -265,6 +301,7 @@ title, description, college, college_code, department, department_code,
 credit_hours_low/high, lecture_hours_low/high, lab_hours_low/high,
 other_hours_low/high, bill_hours_low/high,
 prerequisites, corequisites, restrictions, course_attributes,
+levels, grade_modes, schedule_types,
 prerequisites_json, restrictions_json
 UNIQUE(subject, course_number, term_effective)
 ```
