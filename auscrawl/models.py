@@ -139,3 +139,4 @@ class CourseDetail:
     prerequisites_json: str = ""
     restrictions_json: str = ""
     rules: list[PrereqRule] = field(default_factory=list)
+    missing_parts: list[str] = field(default_factory=list)

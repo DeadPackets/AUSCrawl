@@ -1,6 +1,7 @@
 """One coroutine per endpoint. All network access lives here."""
 
 import asyncio
+import logging
 from typing import Callable, Optional
 
 import httpx
@@ -11,8 +12,14 @@ from .models import CourseDetail
 from .parse_json import parse_code_list, parse_terms
 from .session import TermSession
 
+log = logging.getLogger("auscrawl")
+
 _REF_ENDPOINTS = {"subject": "ref_subject", "instructor": "ref_instructor",
                   "attribute": "ref_attribute"}
+
+# A 500 from a detail endpoint usually means "no such course in that term", which
+# no amount of retrying fixes. Two attempts covers the genuinely transient case.
+DETAIL_RETRIES = 2
 
 
 async def fetch_terms(client: httpx.AsyncClient, rate: Optional[RateLimiter]):
@@ -31,34 +38,69 @@ async def fetch_reference(client: httpx.AsyncClient, term_id: str, kind: str,
     return parse_code_list(resp.content)
 
 
+class EmptyTerm(RuntimeError):
+    """A term returned no rows at all, which at AUS always means a failed bind."""
+
+
 async def fetch_all_pages(sess: TermSession, endpoint_key: str, term_id: str,
-                          parser: Callable) -> list:
-    """Page through a search endpoint until totalCount is covered."""
-    out: list = []
-    offset = 0
-    while True:
-        raw = await sess.fetch_page(endpoint_key, term_id, offset)
-        total, rows = parser(raw, term_id)
-        out.extend(rows)
-        offset += config.PAGE_SIZE
-        if offset >= total or not rows:
+                          parser: Callable, mode: str) -> list:
+    """Bind the term, then page through the endpoint until totalCount is covered.
+
+    A bind that does not take is not an error to Banner: the search answers HTTP 200
+    with totalCount 0, so an unguarded crawler would record zero sections for the
+    term and never notice. Every AUS term has sections, so an empty first page means
+    the bind failed — rebind once, then refuse to record the emptiness.
+    """
+    for attempt in (1, 2):
+        await sess.bind(term_id, mode)
+        out: list = []
+        offset = 0
+        while True:
+            raw = await sess.fetch_page(endpoint_key, term_id, offset)
+            total, rows = parser(raw, term_id)
+            out.extend(rows)
+            offset += config.PAGE_SIZE
+            if offset >= total or not rows:
+                break
+        if total or out:
             return out
+        log.warning("%s for term %s came back empty; rebinding (attempt %d)",
+                    endpoint_key, term_id, attempt)
+
+    raise EmptyTerm(f"{endpoint_key} returned no rows for term {term_id} after a "
+                    f"rebind; the session bind is not taking")
+
+
+_DETAIL_PARTS = ("prereqs", "coreqs", "restrictions", "course_attributes",
+                 "course_catalog_details")
 
 
 async def fetch_course_detail(client: httpx.AsyncClient, term_id: str, subject: str,
                               course_number: str, term_effective: str,
-                              rate: Optional[RateLimiter]) -> CourseDetail:
+                              rate: Optional[RateLimiter],
+                              max_retries: int = DETAIL_RETRIES) -> CourseDetail:
+    """Fetch the five catalog fragments for one course version.
+
+    Banner answers 500 for a course that does not exist in the given term, which is
+    permanent rather than transient. A fragment that will not load is recorded in
+    missing_parts instead of aborting the crawl for every other course.
+    """
     form = {"term": term_id, "subjectCode": subject, "courseNumber": course_number}
+    missing: list[str] = []
 
     async def one(key: str) -> bytes:
-        resp = await request_with_retry(client, "POST", config.EP[key],
-                                        form=form, rate=rate)
-        return resp.content
+        try:
+            resp = await request_with_retry(client, "POST", config.EP[key],
+                                            form=form, rate=rate,
+                                            max_retries=max_retries)
+            return resp.content
+        except (httpx.HTTPError, RuntimeError) as e:
+            log.debug("%s %s%s unavailable: %s", key, subject, course_number, e)
+            missing.append(key)
+            return b""
 
     prereq, coreq, restr, attrs, cat = await asyncio.gather(
-        one("prereqs"), one("coreqs"), one("restrictions"),
-        one("course_attributes"), one("course_catalog_details"),
-    )
+        *(one(k) for k in _DETAIL_PARTS))
 
     rules = parse_html.parse_prereq_rules(prereq)
     details = parse_html.parse_catalog_details(cat)
@@ -76,4 +118,5 @@ async def fetch_course_detail(client: httpx.AsyncClient, term_id: str, subject: 
         prerequisites_json=parse_html.prereq_json(rules),
         restrictions_json=parse_html.restrictions_json(restr),
         rules=rules,
+        missing_parts=[p for p in _DETAIL_PARTS if p in missing],
     )

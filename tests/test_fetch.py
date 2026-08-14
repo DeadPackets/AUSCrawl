@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 
 from auscrawl import fetch, session
 from auscrawl.parse_json import parse_sections
@@ -45,7 +46,8 @@ async def test_fetch_all_pages_walks_the_offsets_until_total_is_reached():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
         sess = session.TermSession(c)
         await sess.bind("202710", "search")
-        rows = await fetch.fetch_all_pages(sess, "sections", "202710", parse_sections)
+        rows = await fetch.fetch_all_pages(sess, "sections", "202710",
+                                           parse_sections, mode="search")
 
     assert calls == [0, 500, 1000]
     assert len(rows) == 1200
@@ -60,7 +62,8 @@ async def test_fetch_all_pages_stops_on_an_empty_page():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
         sess = session.TermSession(c)
         await sess.bind("202710", "search")
-        rows = await fetch.fetch_all_pages(sess, "sections", "202710", parse_sections)
+        rows = await fetch.fetch_all_pages(sess, "sections", "202710",
+                                           parse_sections, mode="search")
     assert rows == []
 
 
@@ -89,3 +92,87 @@ async def test_fetch_course_detail_merges_five_fragments():
     assert d.grade_modes == "Standard Letter S"
     assert "Colleges" in d.restrictions_json
     assert "Actuarial Math Minor_Elective" in d.course_attributes
+
+
+async def test_one_failing_fragment_does_not_lose_the_others():
+    """Banner answers 500 for a course that does not exist in a term. That must
+    degrade to a missing fragment, never abort the whole crawl."""
+    def handler(request):
+        if request.url.path.endswith("getRestrictions"):
+            return httpx.Response(500, text="<html>Ellucian error page</html>")
+        if request.url.path.endswith("getPrerequisites"):
+            return httpx.Response(200, content=read_b9("prereqs_CMP305.html"))
+        return httpx.Response(200, content=read_b9("coreqs_ACC201.html"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        d = await fetch.fetch_course_detail(c, "202610", "CMP", "305", "202610", None,
+                                            max_retries=1)
+
+    assert d.missing_parts == ["restrictions"]
+    assert len(d.rules) == 3          # the prerequisites still made it through
+    assert d.restrictions == ""
+
+
+async def test_a_fully_missing_course_yields_an_empty_detail_not_an_exception():
+    def handler(request):
+        return httpx.Response(500, text="<html>Ellucian error page</html>")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        d = await fetch.fetch_course_detail(c, "202610", "EVR", "101", "202610", None,
+                                            max_retries=1)
+
+    assert len(d.missing_parts) == 5
+    assert d.rules == []
+    assert d.prerequisites_json == ""
+
+
+async def test_max_retries_is_honoured_per_call():
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(500, text="boom")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        await fetch.fetch_course_detail(c, "202610", "X", "1", "202610", None,
+                                        max_retries=2)
+    assert calls["n"] == 10          # 5 endpoints x 2 attempts
+
+
+async def test_an_empty_first_page_triggers_one_rebind_before_giving_up():
+    """A bind that did not take returns totalCount 0 with HTTP 200. Recording zero
+    sections for a term silently would be far worse than retrying."""
+    binds = {"n": 0}
+    state = {"bound": False}
+
+    def handler(request):
+        if request.url.path.endswith("/term/search"):
+            binds["n"] += 1
+            state["bound"] = binds["n"] >= 2      # the first bind silently fails
+            return httpx.Response(200, json={"fwdURL": "/x"})
+        if request.url.path.endswith("/termSelection"):
+            return httpx.Response(200, text="")
+        if not state["bound"]:
+            return httpx.Response(200, json={"totalCount": 0, "data": None})
+        return httpx.Response(200, json=json.loads(read_b9("sections_202710_p0.json")))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        sess = session.TermSession(c)
+        rows = await fetch.fetch_all_pages(sess, "sections", "202710",
+                                           parse_sections, mode="search")
+
+    assert binds["n"] == 2
+    assert len(rows) > 0
+
+
+async def test_a_term_that_stays_empty_raises_rather_than_recording_zero():
+    def handler(request):
+        if "/term/" in request.url.path:
+            return httpx.Response(200, json={"fwdURL": "/x"})
+        return httpx.Response(200, json={"totalCount": 0, "data": None})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        sess = session.TermSession(c)
+        with pytest.raises(fetch.EmptyTerm):
+            await fetch.fetch_all_pages(sess, "sections", "202710",
+                                        parse_sections, mode="search")

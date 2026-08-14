@@ -99,8 +99,6 @@ def test_classroom_string_matches_the_shipped_database_format():
     m = models.Meeting(crn="1", term_id="t", meeting_index=0,
                        building_name="School of Business Administrtn", room="1104")
     assert parse_json.classroom_string(m) == "School of Business Administrtn 1104"
-    assert parse_json.classroom_string(
-        models.Meeting(crn="1", term_id="t", meeting_index=0)) == ""
 
 
 def test_code_list_parses_reference_endpoints():
@@ -143,3 +141,42 @@ def test_catalog_carries_college_and_department_codes():
         read_b9("catalog_202710_p0.json"), "202710")
     assert all(c.college_code for c in courses)
     assert any(c.department_code for c in courses)
+
+
+def test_html_entities_in_the_json_payload_are_decoded():
+    """Banner 9 double-encodes text: courseTitle arrives as 'Qur&#39;an'."""
+    raw = (b'{"totalCount":1,"data":[{"term":"201510","courseReferenceNumber":"1",'
+           b'"subject":"ARA","courseNumber":"205",'
+           b'"courseTitle":"The Language of the Qur&#39;an",'
+           b'"subjectDescription":"Arabic &amp; Translation",'
+           b'"faculty":[{"displayName":"A &amp; B","bannerId":"1"}],'
+           b'"sectionAttributes":[{"code":"X","description":"Maths &amp; Stats"}],'
+           b'"meetingsFaculty":[{"meetingTime":{"buildingDescription":"Arts &amp; Sci",'
+           b'"room":"1"}}]}]}')
+    _, sections = parse_json.parse_sections(raw, "201510")
+    s = sections[0]
+    assert s.title == "The Language of the Qur'an"
+    assert s.instructors[0].name == "A & B"
+    assert s.attributes[0].description == "Maths & Stats"
+    assert s.meetings[0].building_name == "Arts & Sci"
+
+
+def test_html_entities_in_catalog_text_are_decoded():
+    raw = (b'{"totalCount":1,"data":[{"subject":"ARA","courseNumber":"205",'
+           b'"courseTitle":"Qur&#39;an","termEffective":"201510",'
+           b'"courseDescription":"Study of &quot;classical&quot; texts",'
+           b'"college":"Arts &amp; Sciences"}]}')
+    _, courses = parse_json.parse_catalog(raw, "201510")
+    c = courses[0]
+    assert c.title == "Qur'an"
+    assert c.description == 'Study of "classical" texts'
+    assert c.college == "Arts & Sciences"
+
+
+def test_classroom_is_tba_when_a_meeting_has_no_room():
+    """The shipped database stores 'TBA' for an unassigned room, not ''."""
+    m = models.Meeting(crn="1", term_id="t", meeting_index=0)
+    assert parse_json.classroom_string(m) == "TBA"
+    m2 = models.Meeting(crn="1", term_id="t", meeting_index=0,
+                        building_name="SBA", room="1104")
+    assert parse_json.classroom_string(m2) == "SBA 1104"

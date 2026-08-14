@@ -83,9 +83,8 @@ async def run(opts) -> None:
         task = bar.add_task("Sections", total=len(terms))
 
         async def one_term(sess, term_id):
-            await sess.bind(term_id, "search")
             rows = await fetch.fetch_all_pages(sess, "sections", term_id,
-                                               parse_sections)
+                                               parse_sections, mode="search")
             db.save_sections(conn, rows)
             bar.advance(task)
             return len(rows)
@@ -103,8 +102,8 @@ async def run(opts) -> None:
         task = bar.add_task("Catalog", total=len(terms))
 
         async def one_catalog(sess, term_id):
-            await sess.bind(term_id, "courseSearch")
-            rows = await fetch.fetch_all_pages(sess, "catalog", term_id, parse_catalog)
+            rows = await fetch.fetch_all_pages(sess, "catalog", term_id,
+                                               parse_catalog, mode="courseSearch")
             db.save_catalog(conn, rows)
             catalog_courses.extend(rows)
             bar.advance(task)
@@ -125,6 +124,7 @@ async def run(opts) -> None:
 
     sem = asyncio.Semaphore(config.DETAIL_CONCURRENCY)
     batch: list = []
+    incomplete: list[str] = []
     async with make_client(config.DETAIL_CONCURRENCY) as client:
         with _progress() as bar:
             task = bar.add_task("Details", total=len(pending))
@@ -133,6 +133,8 @@ async def run(opts) -> None:
                 async with sem:
                     d = await fetch.fetch_course_detail(
                         client, term_effective, subject, number, term_effective, rate)
+                if d.missing_parts:
+                    incomplete.append(f"{subject}{number}@{term_effective}")
                 batch.append(d)
                 bar.advance(task)
                 if len(batch) >= config.DETAIL_BATCH_SIZE:
@@ -143,4 +145,8 @@ async def run(opts) -> None:
 
     if batch:
         db.save_course_details(conn, batch)
+    if incomplete:
+        console.print(f"[yellow]Details:[/yellow] {len(incomplete)} of {len(pending)} "
+                      f"course versions had at least one fragment Banner would not "
+                      f"serve, e.g. {', '.join(incomplete[:3])}")
     console.print("[bold green]Done.[/bold green]")

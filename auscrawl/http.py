@@ -123,6 +123,7 @@ async def request_with_retry(
     form: dict[str, str] | list[tuple[str, str]] | None = None,
     params: dict | None = None,
     rate: Optional[RateLimiter] = None,
+    max_retries: int | None = None,
 ) -> httpx.Response:
     kwargs: dict = {}
     if form is not None:
@@ -131,8 +132,9 @@ async def request_with_retry(
     if params is not None:
         kwargs["params"] = params
 
-    for attempt in range(1, config.MAX_RETRIES + 1):
-        last = attempt == config.MAX_RETRIES
+    tries = max_retries or config.MAX_RETRIES
+    for attempt in range(1, tries + 1):
+        last = attempt == tries
         if rate:
             await rate.acquire()
         try:
@@ -172,4 +174,4 @@ async def request_with_retry(
                         attempt, e, wait)
             await asyncio.sleep(wait)
 
-    raise RuntimeError(f"Failed after {config.MAX_RETRIES} retries: {method} {url}")
+    raise RuntimeError(f"Failed after {tries} retries: {method} {url}")

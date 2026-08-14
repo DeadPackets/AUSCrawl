@@ -52,6 +52,8 @@ def main(argv=None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(message)s", handlers=[RichHandler(rich_tracebacks=True)],
     )
+    # httpx logs every request at INFO, which drowns the progress bars.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
         asyncio.run(run(args))
     except KeyboardInterrupt:
