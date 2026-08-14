@@ -134,6 +134,7 @@ Base: `https://register.aus.edu/StudentRegistrationSsb/ssb`
 | POST | `/courseSearchResults/getRestrictions` | same | HTML fragment |
 | POST | `/courseSearchResults/getCourseAttributes` | same | HTML fragment |
 | POST | `/courseSearchResults/getCourseCatalogDetails` | same | HTML — Levels, Grading Modes, Schedule Types |
+| POST | `/courseSearchResults/getCourseDescription` | same | HTML — full description; the catalog search truncates its inline copy to 100 chars |
 
 `pageMaxSize` silently clamps to 500; requesting 2000 returns 500 records.
 
