@@ -266,10 +266,13 @@ SELECT
               OR m.start_date = '' OR m.end_date = '' THEN ''
          ELSE {_date_long('m.start_date')} || ' - ' || {_date_long('m.end_date')}
     END AS date_range,
-    COALESCE(p.name, '') AS instructor_name,
+    -- 'TBA' is the sentinel the published database has always used for an
+    -- unassigned instructor, matching the unassigned-room convention.
+    CASE WHEN COALESCE(p.name,'') = '' THEN 'TBA' ELSE p.name END AS instructor_name,
     COALESCE(p.email, '') AS instructor_email,
-    CASE WHEN lower(s.schedule_type) LIKE '%lab%'
-              OR lower(COALESCE(m.meeting_type_desc, '')) LIKE '%lab%'
+    -- Exact equality, matching the Banner 8 parser: a 'Lecture/Lab' section was
+    -- never flagged, and a compatibility view must not quietly widen that.
+    CASE WHEN s.schedule_type = 'Lab' OR COALESCE(m.meeting_type_desc,'') = 'Lab'
          THEN 1 ELSE 0 END AS is_lab,
     s.part_of_term,
     m.building, m.building_name, m.room,

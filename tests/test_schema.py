@@ -256,3 +256,39 @@ def test_importing_legacy_extras_from_an_old_database(tmp_path):
     assert conn.execute(
         "SELECT title FROM courses WHERE crn='10394'"
     ).fetchone()[0] == "Calculus III (Take it with MTH 203R Sec.1)"
+
+
+def test_is_lab_matches_the_legacy_definition_exactly(tmp_path):
+    """The Banner 8 parser tested schedule type == 'Lab', so a 'Lecture/Lab' section
+    was not flagged. A compatibility view must not quietly widen that."""
+    conn = seeded(tmp_path)
+    for crn, sched, expected in (("a", "Lab", 1), ("b", "Lecture/Lab", 0),
+                                 ("c", "Lecture", 0)):
+        s = _section(crn=crn, schedule_type=sched)
+        s.meetings[0].crn = crn
+        db.save_sections(conn, [s])
+        assert conn.execute(
+            "SELECT is_lab FROM courses WHERE crn=?", (crn,)
+        ).fetchone()[0] == expected, sched
+
+
+def test_is_lab_is_set_by_a_lab_meeting_block(tmp_path):
+    conn = seeded(tmp_path)
+    s = _section(crn="d", schedule_type="Lecture")
+    s.meetings[0].crn = "d"
+    s.meetings[0].meeting_type_desc = "Lab"
+    db.save_sections(conn, [s])
+    assert conn.execute("SELECT is_lab FROM courses WHERE crn='d'").fetchone()[0] == 1
+
+
+def test_a_section_with_no_instructor_reads_tba(tmp_path):
+    """The published database records an unassigned instructor as 'TBA' with an
+    empty email, the same sentinel it uses for an unassigned room."""
+    conn = seeded(tmp_path)
+    s = _section(crn="noinstr")
+    s.meetings[0].crn = "noinstr"
+    s.instructors = []
+    db.save_sections(conn, [s])
+    assert conn.execute(
+        "SELECT instructor_name, instructor_email FROM courses WHERE crn='noinstr'"
+    ).fetchone() == ("TBA", "")
