@@ -119,43 +119,113 @@ WHERE c.subject = 'COE' AND c.course_number = '390'
 GROUP BY d.subject, d.course_number;
 ```
 
+New in the Banner 9 release:
+
+```sql
+-- Sections that still have seats, with real counts rather than a boolean
+SELECT subject, course_number, section, enrollment, max_enrollment,
+       seats_available_count
+FROM courses
+WHERE term_id = '202710' AND seats_available_count > 0
+ORDER BY subject, course_number;
+
+-- What did CMP 305 require in 2015 versus today?
+SELECT term_effective, prerequisites
+FROM catalog_versions
+WHERE subject = 'CMP' AND course_number = '305'
+ORDER BY term_effective;
+
+-- Every course that accepts a placement-test score in place of a prerequisite course
+SELECT DISTINCT subject, course_number, test_code, test_score
+FROM prereq_rules
+WHERE test_code != ''
+ORDER BY subject, course_number;
+
+-- The busiest rooms in a term
+SELECT building_name, room, COUNT(*) AS blocks
+FROM meetings
+WHERE term_id = '202710' AND room != ''
+GROUP BY building_name, room
+ORDER BY blocks DESC
+LIMIT 20;
+
+-- The prerequisite expression tree, exactly as Banner stores it
+SELECT seq, connector, open_paren, close_paren,
+       COALESCE(NULLIF(test_code, ''), req_subject || ' ' || req_course_number) AS req,
+       COALESCE(NULLIF(test_score, ''), min_grade) AS threshold
+FROM prereq_rules
+WHERE subject = 'CMP' AND course_number = '305'
+ORDER BY term_effective DESC, seq;
+```
+
 ---
 
 ## Database Schema
 
-The SQLite database contains 13 normalized tables with proper indexes:
+16 normalized tables with indexes. Every table and column that existed before Banner 9 is still present and still populated, so queries written against older releases keep working.
 
 **Core tables:**
 - `semesters` — term ID and name (e.g. `202620`, `Spring 2026`)
 - `subjects` — subject codes and full names (e.g. `COE`, `Computer Engineering`)
-- `courses` — every course section with schedule, instructor, classroom, etc.
-- `instructors` — deduplicated instructor names and emails with `first_seen`
+- `courses` — every course section with schedule, instructor, classroom, and now **real seat counts** (`enrollment`, `max_enrollment`, `seats_available_count`), `building` / `room` split out, `part_of_term`, and cross-listing
+- `instructors` — deduplicated names, emails, `first_seen`, and **Banner IDs**
 - `levels` — academic levels (Undergraduate, Graduate, etc.)
 - `attributes` — course attributes with `first_seen`
 
 **Extended tables:**
-- `catalog` — course descriptions, credit/lecture/lab hours, department
-- `catalog_detail` — course-level **attributes** (degree-requirement tags), schedule types, levels, and catalog-level prerequisites/corequisites/restrictions
-- `section_details` — prerequisites, corequisites, restrictions, waitlist, fees per section, plus structured `prerequisites_json` / `corequisites_json` (boolean AND/OR expression trees) and `restrictions_json` (typed include/exclude groups)
-- `section_instructors` — every instructor on each section, including co-taught ones, with an `is_primary` flag
-- `course_dependencies` — flat prerequisite/corequisite links with minimum grade requirements
+- `meetings` — *new*. One row per meeting block with structured day booleans, `building` / `building_name` / `room`, `start_date` / `end_date`, and `hours_week`. The `courses` columns flatten this; here it is unflattened
+- `catalog_versions` — *new*. The full history of every course, keyed `(subject, course_number, term_effective)`. This is what makes "what did CMP 305 require in 2015?" answerable
+- `prereq_rules` — *new*. One row per row of Banner's prerequisite table, so the boolean expression is queryable without parsing JSON. Includes **test-score prerequisites** (SAT, placement exams) that the old text parser could not represent at all
+- `catalog` — the latest version of each course: description, credit/lecture/lab/other/bill hours, college, department
+- `catalog_detail` — latest course-level attributes, schedule types, levels, **grading modes**, and prerequisites/corequisites/restrictions
+- `section_details` — per-section prerequisites, corequisites, restrictions, plus `prerequisites_json` (boolean AND/OR trees) and `restrictions_json` (typed include/exclude groups)
+- `section_instructors` — every instructor on each section including co-taught ones, with `is_primary` and `banner_id`
+- `course_dependencies` — flat prerequisite/corequisite links with minimum grades
 
 ---
 
 ## Banner Technical Details
 
-AUS uses [Ellucian Banner](https://www.ellucian.com/solutions/ellucian-banner), a student information system widely deployed across universities. The public-facing schedule search is served at `banner.aus.edu` behind Cloudflare, exposing several OWA (Oracle Web Agent) endpoints:
+AUS runs [Ellucian Banner 9](https://www.ellucian.com/solutions/ellucian-banner) Student Registration Self-Service at `register.aus.edu`, behind Cloudflare. It serves **JSON**, needs no authentication, and covers all 101 terms from Spring 2005 to the present.
+
+> The old Banner 8 OWA endpoints under `banner.aus.edu/axp3b21h/owa/` were removed and now return 404. AUSCrawl 3.0 targets Banner 9 exclusively.
+
+Base URL: `https://register.aus.edu/StudentRegistrationSsb/ssb`
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/axp3b21h/owa/bwckschd.p_disp_dyn_sched` | GET | Semester dropdown — returns all available term IDs |
-| `/axp3b21h/owa/bwckgens.p_proc_term_date` | POST | Subject listing — returns available subjects for a given term |
-| `/axp3b21h/owa/bwckschd.p_get_crse_unsec` | POST | Course search — returns HTML tables of all matching sections |
-| `/axp3b21h/owa/bwckctlg.p_display_courses` | GET | Course catalog — returns descriptions, credit hours, department |
-| `/axp3b21h/owa/bwckctlg.p_disp_course_detail` | GET | Course detail — returns course-level attributes, schedule types, prerequisites |
-| `/axp3b21h/owa/bwckschd.p_disp_detail_sched` | GET | Section detail — returns prerequisites, corequisites, restrictions, waitlist, fees |
+| `/classSearch/getTerms` | GET | All term codes and names — stateless |
+| `/term/termSelection?mode=…` | GET | Sets the session's search mode |
+| `/term/search?mode=…` | POST | **Binds a term to the session** |
+| `/searchResults/searchResults` | GET | Sections, 500 per page, with meetings, faculty, seats, attributes |
+| `/courseSearchResults/courseSearchResults` | GET | Catalog, 500 per page, descriptions inline |
+| `/classSearch/get_subject` · `get_instructor` · `get_attribute` | GET | Reference lists for a term |
+| `/courseSearchResults/getPrerequisites` | POST | Prerequisite table (the boolean expression) |
+| `/courseSearchResults/getCorequisites` · `getRestrictions` · `getCourseAttributes` | POST | Catalog fragments |
+| `/courseSearchResults/getCourseCatalogDetails` | POST | Levels, grading modes, schedule types |
 
-The course search endpoint accepts all subject codes in a single POST body (up to ~4,500 bytes before the WAF rejects it), returning a large HTML page with `<table class="datadisplaytable">` rows. Instructor emails are obfuscated using Cloudflare's email protection (XOR encoding with the first byte as key). The crawler paces the GET endpoints with a global token-bucket rate limiter (AIMD around ~18–25 req/s); in practice 429 responses begin around ~30 req/s, well below the documented stream limits (~10,000 HTTP/2 streams per connection). Actual enrollment/seat counts are **not** exposed by AUS Banner (only waitlist figures), even for completed terms.
+`pageMaxSize` silently clamps to **500** — asking for more just wastes the round trip.
+
+### Two behaviours that will corrupt data if ignored
+
+**The search endpoints are session-stateful and ignore `txt_term`.** The term comes from `POST /term/search`, not the query string. Bind Fall 2026 and ask for Spring 2015 and the server answers **HTTP 200 with Fall 2026 data**, or with an empty result set — never an error. AUSCrawl verifies every record's `term` against the bound term and refuses to record an empty term without rebinding first. Term-level parallelism therefore comes from a pool of independent sessions, never from concurrent requests on one session.
+
+**The detail endpoints are stateless.** They take `term` in the POST body and work on a cold client, so they parallelize freely. A 500 from them means "no such course in that term" — permanent, not transient.
+
+### Rate limiting
+
+Measured headroom is high: 40 requests at concurrency 16 completed at ~174 req/s with zero 429s. **Headroom is not permission.** The default target is **10 req/s**, paced by a global token-bucket limiter with AIMD backoff, which puts a full 101-term crawl at roughly an hour. Neither `register.aus.edu` nor `banner.aus.edu` serves a `robots.txt`, so the limit is a self-imposed courtesy.
+
+### Known gaps
+
+Two fields the Banner 8 scraper collected have **no equivalent anywhere in Banner 9**:
+
+- `registration_dates` — no endpoint exposes it (`getRegistrationDates` and friends all 404). Existing values in the shipped database are preserved; the crawler never writes an empty string over them.
+- Section-title suffixes — Banner 8 showed titles like `Calculus III (Take it with MTH 203R Sec.1)`. Banner 9 returns only the catalog title. Historical rows keep their richer titles; new rows get the catalog title.
+
+One field is now **fixed rather than lost**: `schedule_type` used to hold the literal string `"Schedule Type"` for every row — the old parser captured the column label instead of the value. It now holds the real value (`Lecture`, `Lab`, …).
+
+Unlike Banner 8, Banner 9 **does** expose actual enrollment and seat counts.
 
 ---
 
@@ -181,35 +251,46 @@ uv run python crawl.py [options]
 |------|-------------|
 | `-o`, `--output` | SQLite output path (default: `aus_data.db`) |
 | `-t`, `--terms` | Only crawl specific term IDs (e.g. `202620 202510`) |
-| `-w`, `--workers` | Max concurrent requests (default: 50) |
-| `--rate` | Target GET requests/sec; AIMD ceiling that paces the catalog/detail phases (default: 18, backs off on 429s). Raise to go faster, lower for extra safety |
-| `--delay` | Extra seconds to pause before each request (default: 0; pacing is normally handled by `--rate`) |
+| `--rate` | Target requests/sec, AIMD-paced (default: 10, ceiling 30). Lower for extra safety |
 | `--latest` | Only crawl the most recent semester |
-| `--resume` | Skip semesters already in the database |
-| `--force` | Drop and recreate all tables |
-| `--no-catalog` | Skip catalog description scraping |
-| `--no-details` | Skip section detail scraping |
+| `--resume` | Skip semesters and course versions already in the database |
+| `--force` | Delete the database and start over |
+| `--no-catalog` | Skip the catalog phase (and details, which depend on it) |
+| `--no-details` | Skip the per-course detail phase |
 | `-v`, `--verbose` | Debug-level logging |
 
 ### How It Works
 
-The crawler runs in 5 phases:
+Five phases, roughly **41,000 requests** for all 101 terms — down from ~95,000 under Banner 8:
 
-1. **Semester discovery** — fetches the list of all available terms from Banner's dropdown
-2. **Subject catalog** — fetches subject codes from every semester and deduplicates (the dropdown varies per term)
-3. **Course scraping** — POSTs to the schedule search endpoint for every semester with all subjects in a single batch, then parses the HTML response with lxml (50 concurrent workers)
-4. **Catalog scraping** — GETs course catalog pages for a sample of 6 evenly-spaced terms to collect descriptions, hours, and departments (10 concurrent workers)
-5. **Detail scraping** — GETs the section detail page for every unique CRN/term pair to extract prerequisites, corequisites, restrictions, waitlist info, and fees (10 concurrent workers)
+| Phase | Requests | What it does |
+|---|---|---|
+| 1. Terms | 1 | `getTerms` → 101 terms |
+| 2. Reference | ~200 | Subject and attribute lists per term |
+| 3. Sections | ~250 | Pool of sessions; per term, bind + `ceil(n/500)` pages |
+| 4. Catalog | ~450 | Same pattern; descriptions arrive inline |
+| 5. Details | ~40,000 | 5 stateless POSTs per unique `(subject, course#, term_effective)` |
+
+Phase 5 dominates, and it is only affordable because details are fetched **per course version** rather than per section — roughly 8,000 versions instead of 74,000 sections.
 
 ### Technical Details
 
-- **Async HTTP/2** via `httpx` with connection pooling and automatic retry with exponential backoff
-- **lxml** for HTML parsing (12x faster than BeautifulSoup)
-- **ThreadPoolExecutor** offloads CPU-bound parsing from the async event loop
-- **Catalog sampling** reduces catalog requests by ~80% while maintaining full course coverage
-- **Cloudflare email protection** decoding (XOR-obfuscated instructor emails)
-- **Crash resilience** — each phase saves to DB immediately; detail phase does periodic batch saves every 5,000 entries; `--resume` skips completed work
-- **Rate-limit aware** — respects server 429 responses with exponential backoff; GET endpoints capped at 10 workers to avoid triggering bans
+- **Async HTTP/2** via `httpx`, connection pooling, jittered exponential backoff (equal-jitter, so retries don't synchronize), `Retry-After` honored
+- **Global token-bucket limiter with AIMD** — paces request *starts*, so throughput is decoupled from worker count. A 429/503/challenge halves the rate; sustained success climbs back
+- **Session pool** — the search endpoints are stateful, so each in-flight term gets its own cookie jar. Every page is verified against the bound term
+- **Stable browser fingerprint** — one current Chrome identity with matching `Sec-Fetch-*` and `Sec-CH-UA` headers. User-agent *rotation* is itself a detection signal, so it is deliberately avoided
+- **Graceful degradation** — a course version whose fragment Banner refuses to serve is recorded as incomplete and reported at the end, never allowed to abort the crawl
+- **Crash resilience** — each phase commits as it finishes; the detail phase batch-saves every 2,000 courses; `--resume` skips completed work
+- **Additive migration** — pointing `-o` at an existing database upgrades it in place with `ALTER TABLE`, so the shipped snapshot keeps all its rows
+
+### Tests
+
+```bash
+uv run --project . pytest           # offline, fixture-driven
+uv run --project . pytest -m live   # hits the real Banner server
+```
+
+The live suite is the canary: it fails if Banner changes the prerequisite table shape, stops ignoring `txt_term`, or alters the section payload.
 
 </details>
 
