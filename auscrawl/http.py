@@ -9,7 +9,7 @@ import asyncio
 import logging
 import random
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 from urllib.parse import urlencode
 
 import httpx
@@ -42,7 +42,7 @@ def backoff_delay(
     return full / 2 + (full / 2) * jitter()
 
 
-def retry_after_seconds(resp: httpx.Response) -> Optional[float]:
+def retry_after_seconds(resp: httpx.Response) -> float | None:
     raw = resp.headers.get("retry-after")
     if not raw:
         return None
@@ -68,7 +68,7 @@ class RateLimiter:
     def __init__(
         self,
         rate: float,
-        max_rate: Optional[float] = None,
+        max_rate: float | None = None,
         min_rate: float = config.MIN_RATE,
         decrease: float = 0.5,
         increase: float = 1.0,
@@ -80,7 +80,7 @@ class RateLimiter:
         self.decrease = decrease
         self.increase = increase
         self._now = now
-        self._next_free: Optional[float] = None
+        self._next_free: float | None = None
         self._lock = asyncio.Lock()
 
     def _reserve(self, now: float) -> float:
@@ -122,7 +122,7 @@ async def request_with_retry(
     *,
     form: dict[str, str] | list[tuple[str, str]] | None = None,
     params: dict | None = None,
-    rate: Optional[RateLimiter] = None,
+    rate: RateLimiter | None = None,
     max_retries: int | None = None,
 ) -> httpx.Response:
     kwargs: dict = {}

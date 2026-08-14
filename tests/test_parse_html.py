@@ -4,7 +4,6 @@ from auscrawl import parse_html
 from auscrawl.models import PrereqRule
 from tests.conftest import read_b9
 
-
 # --- prerequisite table ------------------------------------------------------
 
 def test_simple_single_course_prerequisite():

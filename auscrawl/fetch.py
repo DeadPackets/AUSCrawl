@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import httpx
 
@@ -22,7 +22,7 @@ _REF_ENDPOINTS = {"subject": "ref_subject", "instructor": "ref_instructor",
 DETAIL_RETRIES = 2
 
 
-async def fetch_terms(client: httpx.AsyncClient, rate: Optional[RateLimiter]):
+async def fetch_terms(client: httpx.AsyncClient, rate: RateLimiter | None):
     resp = await request_with_retry(
         client, "GET", config.EP["terms"],
         params={"searchTerm": "", "offset": 1, "max": 500}, rate=rate)
@@ -30,7 +30,7 @@ async def fetch_terms(client: httpx.AsyncClient, rate: Optional[RateLimiter]):
 
 
 async def fetch_reference(client: httpx.AsyncClient, term_id: str, kind: str,
-                          rate: Optional[RateLimiter]):
+                          rate: RateLimiter | None):
     resp = await request_with_retry(
         client, "GET", config.EP[_REF_ENDPOINTS[kind]],
         params={"searchTerm": "", "term": term_id, "offset": 1, "max": 5000},
@@ -77,7 +77,7 @@ _DETAIL_PARTS = ("prereqs", "coreqs", "restrictions", "course_attributes",
 
 async def fetch_course_detail(client: httpx.AsyncClient, term_id: str, subject: str,
                               course_number: str, term_effective: str,
-                              rate: Optional[RateLimiter],
+                              rate: RateLimiter | None,
                               max_retries: int = DETAIL_RETRIES) -> CourseDetail:
     """Fetch the five catalog fragments for one course version.
 

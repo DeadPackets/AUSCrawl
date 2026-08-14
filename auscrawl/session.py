@@ -9,7 +9,7 @@ term in flight.
 
 import asyncio
 import logging
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -36,11 +36,11 @@ def verify_term(payload: dict, expected_term: str, record_key: str = "term") -> 
 class TermSession:
     """One cookie jar, one bound term at a time."""
 
-    def __init__(self, client: httpx.AsyncClient, rate: Optional[RateLimiter] = None):
+    def __init__(self, client: httpx.AsyncClient, rate: RateLimiter | None = None):
         self.client = client
         self.rate = rate
-        self.term: Optional[str] = None
-        self.mode: Optional[str] = None
+        self.term: str | None = None
+        self.mode: str | None = None
 
     async def bind(self, term_id: str, mode: str) -> None:
         await request_with_retry(
@@ -81,7 +81,7 @@ class SessionPool:
     """A fixed number of independent sessions; terms are handed out one per session."""
 
     def __init__(self, size: int = config.SESSION_POOL_SIZE,
-                 rate: Optional[RateLimiter] = None):
+                 rate: RateLimiter | None = None):
         self.size = size
         self.rate = rate
         self._sessions: list[TermSession] = []

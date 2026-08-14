@@ -11,7 +11,7 @@ import httpx
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from auscrawl import config  # noqa: E402
+from auscrawl import config
 
 OUT = pathlib.Path(__file__).parent / "fixtures" / "banner9"
 TERM = "202710"
