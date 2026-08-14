@@ -1,0 +1,1063 @@
+
+[
+  {
+    "code": "ACCV",
+    "description": "ACC major_BSBA_Elective"
+  },
+  {
+    "code": "ACNA",
+    "description": "ACC Minor_Elective_AMP"
+  },
+  {
+    "code": "AMP",
+    "description": "Accelerated Master&#39;s Prog Crse"
+  },
+  {
+    "code": "ACCE",
+    "description": "Accounting Major Elective"
+  },
+  {
+    "code": "ACCN",
+    "description": "Accounting Minor_Elective"
+  },
+  {
+    "code": "AMTN",
+    "description": "Actuarial Math Minor_Elective"
+  },
+  {
+    "code": "AMTR",
+    "description": "Actuarial Math Minor_Requirmnt"
+  },
+  {
+    "code": "ACMA",
+    "description": "Actuarial Math Mnr_Elctve_AMP"
+  },
+  {
+    "code": "ADVC",
+    "description": "Advertising Conctrtn_Elective"
+  },
+  {
+    "code": "ASEN",
+    "description": "Aerospace Eng&#39;g Minor_Elective"
+  },
+  {
+    "code": "AMSN",
+    "description": "American Studies Mnr_Elective"
+  },
+  {
+    "code": "ACMT",
+    "description": "Appld_Comptnl Mth Minor_Elec"
+  },
+  {
+    "code": "AMNA",
+    "description": "Appld_Comptnl Mth Mnr_Elec_AMP"
+  },
+  {
+    "code": "AMCE",
+    "description": "Applied Mechanics_MCE Maj Elct"
+  },
+  {
+    "code": "AMTH",
+    "description": "Applied MTH Track_MSMTH"
+  },
+  {
+    "code": "APHN",
+    "description": "Applied Physics Minor_Elective"
+  },
+  {
+    "code": "ARAN",
+    "description": "ARA Minor_Elective"
+  },
+  {
+    "code": "ARSC",
+    "description": "Arab Studies Cncntrtn_Elective"
+  },
+  {
+    "code": "ARA",
+    "description": "Arabic Heritage Requirement"
+  },
+  {
+    "code": "ARSN",
+    "description": "ARC Studies Minor_Elective"
+  },
+  {
+    "code": "ARSE",
+    "description": "Architectural Studies Mjr_Elec"
+  },
+  {
+    "code": "ARCE",
+    "description": "Architecture Major_Elective"
+  },
+  {
+    "code": "ARLT",
+    "description": "Arts and Literature"
+  },
+  {
+    "code": "ECOA",
+    "description": "BABA ECO Major_Elctv_AMP"
+  },
+  {
+    "code": "ECEA",
+    "description": "BAE ECO Major_Elctv_AMP"
+  },
+  {
+    "code": "BDAE",
+    "description": "BDA Major_Elective"
+  },
+  {
+    "code": "BIOE",
+    "description": "BIO Major_Elective"
+  },
+  {
+    "code": "BIEA",
+    "description": "BIO Major_Elective_AMP"
+  },
+  {
+    "code": "BION",
+    "description": "BIO Minor_Elective"
+  },
+  {
+    "code": "BMEN",
+    "description": "Biomedical Eng&#39;g Minor_Elect"
+  },
+  {
+    "code": "MAEA",
+    "description": "BS MTH Major_Elctv_AMP"
+  },
+  {
+    "code": "PHEA",
+    "description": "BS PHY Major_Elctv_AMP"
+  },
+  {
+    "code": "ACEA",
+    "description": "BSBA ACC Major_Elective_AMP"
+  },
+  {
+    "code": "FIEA",
+    "description": "BSBA FIN Major_Elctv_AMP"
+  },
+  {
+    "code": "BSEE",
+    "description": "BSBE Major_Elective"
+  },
+  {
+    "code": "FINE",
+    "description": "BS_FIN Major_Elective"
+  },
+  {
+    "code": "MISE",
+    "description": "BS_MIS Major Elective"
+  },
+  {
+    "code": "BUSE",
+    "description": "Bus Admn_Major Elective"
+  },
+  {
+    "code": "BUSN",
+    "description": "BUS Minor_Elective"
+  },
+  {
+    "code": "CBCE",
+    "description": "CBC Major _Elective"
+  },
+  {
+    "code": "BIO",
+    "description": "CBC_BIO and BIO-related MJE"
+  },
+  {
+    "code": "BCHM",
+    "description": "CBC_BioChm and BioChm-rltd MJE"
+  },
+  {
+    "code": "CHM",
+    "description": "CBC_CHM and CHM-related MJE"
+  },
+  {
+    "code": "CBEE",
+    "description": "CBE Major _ Elective"
+  },
+  {
+    "code": "CEEE",
+    "description": "CEE Major_Elective"
+  },
+  {
+    "code": "CEME",
+    "description": "CEM Major _ Elective"
+  },
+  {
+    "code": "CHEE",
+    "description": "Chemical Eng&#39;g Major_Elective"
+  },
+  {
+    "code": "CHET",
+    "description": "Chemical Eng&#39;g Technical Elect"
+  },
+  {
+    "code": "CEEA",
+    "description": "Chemical Engg Major_Elctv_AMP"
+  },
+  {
+    "code": "CHME",
+    "description": "Chemistry Major_Elective"
+  },
+  {
+    "code": "CIFC",
+    "description": "CIF Concentration_Elective"
+  },
+  {
+    "code": "CVEE",
+    "description": "Civil Eng&#39;g Major_Elective"
+  },
+  {
+    "code": "CVET",
+    "description": "Civil Eng&#39;g Technical Elective"
+  },
+  {
+    "code": "CVEA",
+    "description": "Civil Engg_Major_Elctv_AMP"
+  },
+  {
+    "code": "CTCE",
+    "description": "Civil Technical Course Elect"
+  },
+  {
+    "code": "CMPO",
+    "description": "CMP Mnr_Elctv (for nonCOE mjr)"
+  },
+  {
+    "code": "CMP",
+    "description": "Cmptr Lit (GenEd pre 2012-13)"
+  },
+  {
+    "code": "CMPT",
+    "description": "Cmptr Lit(GenEd 2012-13 onwrd)"
+  },
+  {
+    "code": "CMTE",
+    "description": "CMT Major_Elective"
+  },
+  {
+    "code": "COMM",
+    "description": "Communication"
+  },
+  {
+    "code": "OTCE",
+    "description": "Comp-Eng Technical Crs Elect"
+  },
+  {
+    "code": "COEE",
+    "description": "Computer Eng&#39;g Major_Elective"
+  },
+  {
+    "code": "COEN",
+    "description": "Computer Eng&#39;g Minor_Elective"
+  },
+  {
+    "code": "COET",
+    "description": "Computer Eng&#39;g Technical Elect"
+  },
+  {
+    "code": "COEA",
+    "description": "Computer Engg_Major_Elctv_AMP"
+  },
+  {
+    "code": "CMPN",
+    "description": "Computer Sc Minor_Elective"
+  },
+  {
+    "code": "CMPE",
+    "description": "Computer Science Majr_Elective"
+  },
+  {
+    "code": "CSEA",
+    "description": "Computer Sc_Major_Elective_AMP"
+  },
+  {
+    "code": "CLTC",
+    "description": "Culture_A Critical Perspective"
+  },
+  {
+    "code": "DAEE",
+    "description": "DAE major elective"
+  },
+  {
+    "code": "DSCE",
+    "description": "Data Science Major_Elective"
+  },
+  {
+    "code": "DSCN",
+    "description": "Data Science Minor_Elective"
+  },
+  {
+    "code": "DSNA",
+    "description": "Data Science_Minor_Elctv_AMP"
+  },
+  {
+    "code": "DMEA",
+    "description": "DES Major_Elective_AMP"
+  },
+  {
+    "code": "DMNA",
+    "description": "DES Minor_Elective_AMP"
+  },
+  {
+    "code": "DESE",
+    "description": "Design Managmnt Major_Elective"
+  },
+  {
+    "code": "DESN",
+    "description": "Design Managmnt Minor_Elective"
+  },
+  {
+    "code": "WRTG",
+    "description": "Discipline-Specfc Wrtg Course"
+  },
+  {
+    "code": "ECEE",
+    "description": "ECE Major_Elective"
+  },
+  {
+    "code": "ECPE",
+    "description": "Eco and Pol _ Major Elective"
+  },
+  {
+    "code": "ECOE",
+    "description": "Economics Major_BAE_Elective"
+  },
+  {
+    "code": "ECOV",
+    "description": "Economics Major_BSBA_Elective"
+  },
+  {
+    "code": "ECNA",
+    "description": "Economics Minor_Elctv_AMP"
+  },
+  {
+    "code": "ECON",
+    "description": "Economics Minor_Elective"
+  },
+  {
+    "code": "EDUN",
+    "description": "Education Minor_Elective"
+  },
+  {
+    "code": "ELM",
+    "description": "ELE Major_Elctve (n.a.)"
+  },
+  {
+    "code": "ELEE",
+    "description": "Electrical Eng&#39;g Majr_Elective"
+  },
+  {
+    "code": "ELEN",
+    "description": "Electrical Eng&#39;g Minor_Elctve"
+  },
+  {
+    "code": "ELET",
+    "description": "Electrical Eng&#39;g Techncl Elect"
+  },
+  {
+    "code": "EEEA",
+    "description": "Electrical Engg_Majr_Elctv_AMP"
+  },
+  {
+    "code": "ETCE",
+    "description": "Electrical Technical Crse Elec"
+  },
+  {
+    "code": "ETLE",
+    "description": "Electrical Technical Lab Elect"
+  },
+  {
+    "code": "GMPN",
+    "description": "Electv-Computer Game Prgrm&#39;g"
+  },
+  {
+    "code": "ENGE",
+    "description": "ENG  Mjr_Elc (Cat prior 22-23)"
+  },
+  {
+    "code": "ELAC",
+    "description": "ENG Lang CNR (Cat prior 22-23)"
+  },
+  {
+    "code": "ELGN",
+    "description": "ENG Lang Minor_Elective"
+  },
+  {
+    "code": "ELIC",
+    "description": "ENG Lit CNR (Cat prior 22-23)"
+  },
+  {
+    "code": "ELLN",
+    "description": "ENG Minor_Elective"
+  },
+  {
+    "code": "ELLE",
+    "description": "ENG Mjr_Elc (cat as of 22-23)"
+  },
+  {
+    "code": "EGME",
+    "description": "Eng&#39;g Managemnt Theme_Elective"
+  },
+  {
+    "code": "EGMN",
+    "description": "Eng&#39;g Managmnt_Minor_Elective"
+  },
+  {
+    "code": "ELAN",
+    "description": "Engl Lang Minor-Elective(n.a.)"
+  },
+  {
+    "code": "ENEA",
+    "description": "English Lang Lit_Mjr_Elctv_AMP"
+  },
+  {
+    "code": "ELNG",
+    "description": "English Language Course"
+  },
+  {
+    "code": "ELIN",
+    "description": "English Lit Minor_Elective"
+  },
+  {
+    "code": "ELIT",
+    "description": "English Literature Course"
+  },
+  {
+    "code": "ENGN",
+    "description": "English Minor_Elective"
+  },
+  {
+    "code": "ENG",
+    "description": "Englsh Language Competency Req"
+  },
+  {
+    "code": "ENSE",
+    "description": "ENS Major_Elective"
+  },
+  {
+    "code": "ENIN",
+    "description": "Entrprnshp Innvtn Minor_Electv"
+  },
+  {
+    "code": "EBEC",
+    "description": "ENV Bio and Ecosystms Conc_Elc"
+  },
+  {
+    "code": "EBEA",
+    "description": "ENV Bio Ecosyst_Conc_Elc_AMP"
+  },
+  {
+    "code": "ECAC",
+    "description": "ENV Chem and Anlysis Conc_Elec"
+  },
+  {
+    "code": "ECAA",
+    "description": "ENV Chm Analysis_Conc_Elc_AMP"
+  },
+  {
+    "code": "ENVE",
+    "description": "Environmtl Sciences Majr_Elect"
+  },
+  {
+    "code": "ENVN",
+    "description": "Environmtl Sciences Minr_Elect"
+  },
+  {
+    "code": "EWEN",
+    "description": "Envrmntl_Water_Eng&#39;g_Mnr_Elctv"
+  },
+  {
+    "code": "ENPN",
+    "description": "Envrnmtl Policy Minor_Elective"
+  },
+  {
+    "code": "ESME",
+    "description": "ESM Major_Elective"
+  },
+  {
+    "code": "ESSE",
+    "description": "ESS Major_Elective"
+  },
+  {
+    "code": "ETHC",
+    "description": "Ethical Understanding"
+  },
+  {
+    "code": "FLMN",
+    "description": "Film Minor_Elective"
+  },
+  {
+    "code": "FMDE",
+    "description": "FilmAndNewMediaDesign Mjr Elec"
+  },
+  {
+    "code": "FINC",
+    "description": "FIN Concentration_Elective"
+  },
+  {
+    "code": "FINV",
+    "description": "FIN major_Elective"
+  },
+  {
+    "code": "FINN",
+    "description": "FIN Minor_Elective"
+  },
+  {
+    "code": "FINA",
+    "description": "FIN Minor_Elective_AMP"
+  },
+  {
+    "code": "FNTN",
+    "description": "FinTech Minor_Elective"
+  },
+  {
+    "code": "ELC",
+    "description": "Free Elective"
+  },
+  {
+    "code": "GIS",
+    "description": "Geographic Information Systems"
+  },
+  {
+    "code": "GOVS",
+    "description": "Govrnmntl Studies Minor_Elctve"
+  },
+  {
+    "code": "BRDG",
+    "description": "GR Bridging Course"
+  },
+  {
+    "code": "GRDE",
+    "description": "Graphic Design Major_Elective"
+  },
+  {
+    "code": "CLTA",
+    "description": "History and Culture_Arab World"
+  },
+  {
+    "code": "HISN",
+    "description": "History Minor_Elective"
+  },
+  {
+    "code": "HUMN",
+    "description": "Human Interaction and Behavior"
+  },
+  {
+    "code": "HURC",
+    "description": "Human Resrces Concntrtn_Elctve"
+  },
+  {
+    "code": "HUM",
+    "description": "Humanities Requirement"
+  },
+  {
+    "code": "IENR",
+    "description": "IEN University Requirement"
+  },
+  {
+    "code": "IAN",
+    "description": "Illustratn_Animatn_Minor_Elctv"
+  },
+  {
+    "code": "IMCC",
+    "description": "IMC Concentration_Elective"
+  },
+  {
+    "code": "IMCN",
+    "description": "IMC Minor_Elective"
+  },
+  {
+    "code": "INDP",
+    "description": "Independent Study"
+  },
+  {
+    "code": "IEE",
+    "description": "Industrial Eng&#39; Major_Elective"
+  },
+  {
+    "code": "IEEA",
+    "description": "INE Major_Elective_AMP"
+  },
+  {
+    "code": "INFO",
+    "description": "Info Lit (GenEd 2012-13 onwrd)"
+  },
+  {
+    "code": "ILIT",
+    "description": "Info Lit (GenEd pre 2012-13)"
+  },
+  {
+    "code": "INEC",
+    "description": "Innvtn-Entrprnrshp Conc_Elctve"
+  },
+  {
+    "code": "INRE",
+    "description": "INR Conc_Elctv-Do Not Use"
+  },
+  {
+    "code": "IDEE",
+    "description": "Interior Design Major_Elective"
+  },
+  {
+    "code": "IDEN",
+    "description": "Interior Design Minor_Elective"
+  },
+  {
+    "code": "INTR",
+    "description": "Internship"
+  },
+  {
+    "code": "IECC",
+    "description": "Intrntl Econ Conctrtn_Elective"
+  },
+  {
+    "code": "INRC",
+    "description": "Intrntl Rltns Conc_Elective"
+  },
+  {
+    "code": "INBN",
+    "description": "Intrntnl Business Minor_Elctve"
+  },
+  {
+    "code": "INSE",
+    "description": "Intrntnl Studies Major_Elctve"
+  },
+  {
+    "code": "INSN",
+    "description": "Intrntnl Studies Minor_Electve"
+  },
+  {
+    "code": "ISAV",
+    "description": "ISA Major_BSBA_Elective"
+  },
+  {
+    "code": "IBFN",
+    "description": "Islamic Bnk&#39;g and Fin Mnr_Elec"
+  },
+  {
+    "code": "ISME",
+    "description": "ISM Major _ Elective"
+  },
+  {
+    "code": "JRLC",
+    "description": "Jrnlsm Concntrtn_Elective"
+  },
+  {
+    "code": "JRLN",
+    "description": "Jrnlsm Minor_Elective"
+  },
+  {
+    "code": "LARN",
+    "description": "Landscape ARC Minor_Elective"
+  },
+  {
+    "code": "ARBC",
+    "description": "Language of Instruction:Arabic"
+  },
+  {
+    "code": "LMKN",
+    "description": "Luxury MKT Minor_Elective"
+  },
+  {
+    "code": "MLRE",
+    "description": "Machine Learning Major _ ELec"
+  },
+  {
+    "code": "MJRR",
+    "description": "Major Requirement"
+  },
+  {
+    "code": "MATH",
+    "description": "Math (GenEd 2012-13 onwrd)"
+  },
+  {
+    "code": "MTH",
+    "description": "Math/Stat (GenEd pre 2012-13)"
+  },
+  {
+    "code": "MEEA",
+    "description": "MCE Major_Elective_AMP"
+  },
+  {
+    "code": "MCEE",
+    "description": "MCE Majr_Elective"
+  },
+  {
+    "code": "MCET",
+    "description": "MCE Techical Course Elective"
+  },
+  {
+    "code": "MCE2",
+    "description": "MCE Techical Elective_List B"
+  },
+  {
+    "code": "MCE1",
+    "description": "MCE Technical Elective_List A"
+  },
+  {
+    "code": "MCMN",
+    "description": "MCM Minor_Elective"
+  },
+  {
+    "code": "MCME",
+    "description": "MCM_Elctve (catlgs prior18-19)"
+  },
+  {
+    "code": "MCCE",
+    "description": "MCM_Elctve (ctlgs 18-19 onwrd)"
+  },
+  {
+    "code": "MDCE",
+    "description": "MDC Major_Elective"
+  },
+  {
+    "code": "MCEN",
+    "description": "Mechanical Eng&#39;g Minor_Elctve"
+  },
+  {
+    "code": "MTEA",
+    "description": "Mechanical Tech. Elec. List A"
+  },
+  {
+    "code": "MTEB",
+    "description": "Mechanical Tech. Elec. List B"
+  },
+  {
+    "code": "MTCE",
+    "description": "Mechanical Technical Crse Elec"
+  },
+  {
+    "code": "ARAS",
+    "description": "MES Mnr_ARA Studies"
+  },
+  {
+    "code": "MESN",
+    "description": "MES Mnr_Elective"
+  },
+  {
+    "code": "HEPM",
+    "description": "MES Mnr_HIS-ECO-POL of MEA"
+  },
+  {
+    "code": "ISAU",
+    "description": "MES Mnr_Islamic Arc-Urbnsm"
+  },
+  {
+    "code": "ISFE",
+    "description": "MES Mnr_Islamic Fin-Econ"
+  },
+  {
+    "code": "MGTV",
+    "description": "MGT major_BSBA_Elective"
+  },
+  {
+    "code": "MGTE",
+    "description": "MGT Major_Elective"
+  },
+  {
+    "code": "MGT",
+    "description": "MGT Major_Required"
+  },
+  {
+    "code": "MGTN",
+    "description": "MGT Minor_Elective"
+  },
+  {
+    "code": "MISV",
+    "description": "MIS Major_BSBA_Elective"
+  },
+  {
+    "code": "MIS",
+    "description": "MIS Major_Required"
+  },
+  {
+    "code": "MISN",
+    "description": "MIS Minor_Elective"
+  },
+  {
+    "code": "MKTV",
+    "description": "MKT Major_BSBA_Elective"
+  },
+  {
+    "code": "MKTE",
+    "description": "MKT Major_Elective"
+  },
+  {
+    "code": "MKTN",
+    "description": "MKT Minor_Elective"
+  },
+  {
+    "code": "MCNC",
+    "description": "Mngmt Consulting Conc_Elective"
+  },
+  {
+    "code": "MOOT",
+    "description": "Moot Court Course"
+  },
+  {
+    "code": "BMEE",
+    "description": "MSBME elective"
+  },
+  {
+    "code": "MTRE",
+    "description": "MSMTR Elective"
+  },
+  {
+    "code": "MSPE",
+    "description": "MSP Major_Elective"
+  },
+  {
+    "code": "MTHE",
+    "description": "MTH Major_Elective"
+  },
+  {
+    "code": "MTRN",
+    "description": "MTR Minor_Elective"
+  },
+  {
+    "code": "MUME",
+    "description": "Multimedia Major_Elective"
+  },
+  {
+    "code": "MMRL",
+    "description": "Multimedia Related"
+  },
+  {
+    "code": "MUMR",
+    "description": "MUM Major Related"
+  },
+  {
+    "code": "MPRF",
+    "description": "MUS  Adv Performance"
+  },
+  {
+    "code": "MHIS",
+    "description": "MUS History"
+  },
+  {
+    "code": "MUSP",
+    "description": "MUS Minor_Piano_Elective"
+  },
+  {
+    "code": "MUSV",
+    "description": "MUS Minor_Voice_Elective"
+  },
+  {
+    "code": "MUSN",
+    "description": "Music Minor_Elective"
+  },
+  {
+    "code": "SCNC",
+    "description": "Natural Sciences Requirement"
+  },
+  {
+    "code": "OMN",
+    "description": "Operations Mngmt Minor_Electve"
+  },
+  {
+    "code": "ORAL",
+    "description": "Oral Proficiency"
+  },
+  {
+    "code": "PETN",
+    "description": "Petroleum Eng&#39;g Minor_Elective"
+  },
+  {
+    "code": "MSEE",
+    "description": "PhD MSE_Major Elective"
+  },
+  {
+    "code": "PHIN",
+    "description": "Philosophy Minor_Elective"
+  },
+  {
+    "code": "PHTN",
+    "description": "Photography Minor_Elective"
+  },
+  {
+    "code": "PHYE",
+    "description": "PHY Major_Elective"
+  },
+  {
+    "code": "PHYN",
+    "description": "Physics Minor_Elective"
+  },
+  {
+    "code": "PRDN",
+    "description": "Poduct Design Minor_Elective"
+  },
+  {
+    "code": "PREP",
+    "description": "Preparatory"
+  },
+  {
+    "code": "PREQ",
+    "description": "Prerequisite Deficiency Course"
+  },
+  {
+    "code": "PJME",
+    "description": "Project Managmt Theme_Elective"
+  },
+  {
+    "code": "PSYE",
+    "description": "PSY Major_Elective"
+  },
+  {
+    "code": "PSYN",
+    "description": "PSY Minor_Elective"
+  },
+  {
+    "code": "PBRC",
+    "description": "Publc Rltns Concntrtn_Elective"
+  },
+  {
+    "code": "PBAE",
+    "description": "Public Admin Major_Elective"
+  },
+  {
+    "code": "PBAN",
+    "description": "Public Admin Minor_Elective"
+  },
+  {
+    "code": "PBMC",
+    "description": "Public Management Conc_Electve"
+  },
+  {
+    "code": "PMTH",
+    "description": "Pure MTH Track_MSMTH"
+  },
+  {
+    "code": "RWEN",
+    "description": "RWE Minor_Elective"
+  },
+  {
+    "code": "SCI",
+    "description": "Science Requirement"
+  },
+  {
+    "code": "SOC",
+    "description": "Social Science Requirement"
+  },
+  {
+    "code": "SOCN",
+    "description": "Sociology Minor_Elective"
+  },
+  {
+    "code": "SESN",
+    "description": "Software_Security_Minor_Elctve"
+  },
+  {
+    "code": "STAT",
+    "description": "Stat (GenEd 2012-13 onwrd)"
+  },
+  {
+    "code": "SCMV",
+    "description": "Supply Chain Mgmnt Major_Elctv"
+  },
+  {
+    "code": "SCMN",
+    "description": "Supply Chain Mgmnt Minor_Elctv"
+  },
+  {
+    "code": "SCMC",
+    "description": "Supply Chain Mngmt Conc_Elctve"
+  },
+  {
+    "code": "ELTE",
+    "description": "TESOL Major Elective"
+  },
+  {
+    "code": "TSLE",
+    "description": "TESOL Major_Elective"
+  },
+  {
+    "code": "THEN",
+    "description": "Theatre Minor_Elective"
+  },
+  {
+    "code": "THER",
+    "description": "Theatre Minor_Requirement"
+  },
+  {
+    "code": "THRM",
+    "description": "Thermofluids_MCE Maj Elective"
+  },
+  {
+    "code": "TRAN",
+    "description": "TRAN Minor_Elective"
+  },
+  {
+    "code": "TRNA",
+    "description": "TRAN Minor_Elective_AMP"
+  },
+  {
+    "code": "TRAM",
+    "description": "Translation Major Requirement"
+  },
+  {
+    "code": "TRAE",
+    "description": "Translation Major_Elective"
+  },
+  {
+    "code": "TRDE",
+    "description": "TRD Major_Elective"
+  },
+  {
+    "code": "TRIE",
+    "description": "TRIN Major_Elective"
+  },
+  {
+    "code": "TRNN",
+    "description": "TRIN Minor_Elective (n.a.)"
+  },
+  {
+    "code": "TRSN",
+    "description": "TRS Minor_Elective"
+  },
+  {
+    "code": "TRNS",
+    "description": "UPL_Transportation Focus"
+  },
+  {
+    "code": "UDSG",
+    "description": "UPL_Urban Design Focus"
+  },
+  {
+    "code": "UPPR",
+    "description": "Upper Level Course"
+  },
+  {
+    "code": "UDSN",
+    "description": "Urban Design Minor_Elective"
+  },
+  {
+    "code": "UPLE",
+    "description": "Urban Planning Major_Elective"
+  },
+  {
+    "code": "UPLN",
+    "description": "Urban Planning Minor_Elective"
+  },
+  {
+    "code": "VISR",
+    "description": "VIS Major Related"
+  },
+  {
+    "code": "VISE",
+    "description": "VIS Major_Elective"
+  },
+  {
+    "code": "VSRL",
+    "description": "Visual Communication Related"
+  },
+  {
+    "code": "WTRC",
+    "description": "Western Studies Conc_Elective"
+  },
+  {
+    "code": "WSTN",
+    "description": "Women Studies Minor_Elective"
+  }
+]
