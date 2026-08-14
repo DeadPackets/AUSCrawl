@@ -132,6 +132,7 @@ class CourseDetail:
     prerequisites: str = ""
     corequisites: str = ""
     restrictions: str = ""
+    description: str = ""
     course_attributes: str = ""
     levels: str = ""
     grade_modes: str = ""

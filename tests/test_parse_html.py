@@ -93,6 +93,16 @@ def test_fragment_text_strips_markup_and_the_no_information_boilerplate():
     assert "<" not in txt
 
 
+def test_description_fragment_yields_the_full_text():
+    txt = parse_html.fragment_text(read_b9("description_CMP305.html"))
+    assert len(txt) > 100          # the catalog search truncates at 100 chars
+    assert "<" not in txt
+
+
+def test_missing_description_boilerplate_collapses_to_empty():
+    assert parse_html.fragment_text(read_b9("description_none_ACC301.html")) == ""
+
+
 def test_restriction_groups_are_typed_include_or_exclude():
     groups = parse_html.parse_restriction_groups(read_b9("restrictions_ACC201.html"))
     assert len(groups) == 1

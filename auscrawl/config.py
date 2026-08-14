@@ -17,6 +17,7 @@ EP = {
     "restrictions": f"{BASE}/courseSearchResults/getRestrictions",
     "course_attributes": f"{BASE}/courseSearchResults/getCourseAttributes",
     "course_catalog_details": f"{BASE}/courseSearchResults/getCourseCatalogDetails",
+    "course_description": f"{BASE}/courseSearchResults/getCourseDescription",
 }
 
 # The server clamps pageMaxSize to 500; asking for more just wastes the round trip.

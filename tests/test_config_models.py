@@ -3,7 +3,7 @@ from auscrawl import config, models
 
 def test_endpoints_all_hang_off_the_banner9_base():
     assert config.BASE == "https://register.aus.edu/StudentRegistrationSsb/ssb"
-    assert len(config.EP) == 14
+    assert len(config.EP) == 15
     for name, url in config.EP.items():
         assert url.startswith(config.BASE + "/"), name
 

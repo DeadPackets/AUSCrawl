@@ -211,6 +211,29 @@ def test_seat_counts_refresh_on_a_recrawl(tmp_path):
     assert conn.execute("SELECT seats_available FROM courses").fetchone()[0] == 0
 
 
+def test_details_own_the_description_and_a_catalog_revisit_cannot_clobber_it(tmp_path):
+    """The catalog search truncates descriptions to 100 chars; the full text comes
+    from the getCourseDescription fragment and must survive a term revisit."""
+    conn = seeded(tmp_path)
+    full = "A full description well beyond the hundred-character truncation " * 3
+    db.save_course_details(conn, [models.CourseDetail(
+        subject="ACC", course_number="201", term_effective="202610",
+        description=full)])
+    db.save_catalog(conn, [_version(description="Intro to accounting.")])
+    assert conn.execute(
+        "SELECT description FROM course_versions").fetchone()[0] == full
+
+
+def test_a_missing_description_fragment_keeps_the_truncated_catalog_text(tmp_path):
+    conn = seeded(tmp_path)
+    db.save_course_details(conn, [models.CourseDetail(
+        subject="ACC", course_number="201", term_effective="202610",
+        description="")])
+    assert conn.execute(
+        "SELECT description FROM course_versions").fetchone()[0] == \
+        "Intro to accounting."
+
+
 # --- Banner 8 only data survives in one clearly named place -------------------
 
 def test_legacy_extras_supply_registration_dates_and_richer_titles(tmp_path):

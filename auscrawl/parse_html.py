@@ -8,7 +8,8 @@ from lxml import html as lxml_html
 from .models import PrereqRule
 
 RE_WS = re.compile(r"\s+")
-RE_NO_INFO = re.compile(r"No [a-z ]*information available\.?", re.IGNORECASE)
+RE_NO_INFO = re.compile(
+    r"No [a-z ]*(?:information|description) (?:is )?available\.?", re.IGNORECASE)
 RE_RESTR_HEADER = re.compile(
     r"^(must|cannot|may not)\s+be\s+enrolled\s+in\s+one\s+of\s+the\s+following"
     r"\s+(.+?):\s*$",

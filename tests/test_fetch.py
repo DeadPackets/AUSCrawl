@@ -67,7 +67,7 @@ async def test_fetch_all_pages_stops_on_an_empty_page():
     assert rows == []
 
 
-async def test_fetch_course_detail_merges_five_fragments():
+async def test_fetch_course_detail_merges_six_fragments():
     def handler(request):
         path = request.url.path
         if path.endswith("getPrerequisites"):
@@ -78,6 +78,8 @@ async def test_fetch_course_detail_merges_five_fragments():
             return httpx.Response(200, content=read_b9("restrictions_BIO103.html"))
         if path.endswith("getCourseAttributes"):
             return httpx.Response(200, content=read_b9("attributes_ACC201.html"))
+        if path.endswith("getCourseDescription"):
+            return httpx.Response(200, content=read_b9("description_CMP305.html"))
         return httpx.Response(200, content=read_b9("catalogdetails_MTH203.html"))
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
@@ -92,6 +94,7 @@ async def test_fetch_course_detail_merges_five_fragments():
     assert d.grade_modes == "Standard Letter"
     assert "Colleges" in d.restrictions_json
     assert "Actuarial Math Minor_Elective" in d.course_attributes
+    assert len(d.description) > 100 and "<" not in d.description
 
 
 async def test_one_failing_fragment_does_not_lose_the_others():
@@ -121,7 +124,7 @@ async def test_a_fully_missing_course_yields_an_empty_detail_not_an_exception():
         d = await fetch.fetch_course_detail(c, "202610", "EVR", "101", "202610", None,
                                             max_retries=1)
 
-    assert len(d.missing_parts) == 5
+    assert len(d.missing_parts) == 6
     assert d.rules == []
     assert d.prerequisites_json == ""
 
@@ -136,7 +139,7 @@ async def test_max_retries_is_honoured_per_call():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
         await fetch.fetch_course_detail(c, "202610", "X", "1", "202610", None,
                                         max_retries=2)
-    assert calls["n"] == 10          # 5 endpoints x 2 attempts
+    assert calls["n"] == 12          # 6 endpoints x 2 attempts
 
 
 async def test_an_empty_first_page_triggers_one_rebind_before_giving_up():

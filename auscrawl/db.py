@@ -491,12 +491,15 @@ _CATALOG_COLS = (
 )
 # Only the columns the catalog search owns; the detail columns belong to
 # save_course_details and must not be reset when another term revisits this version.
+# description is insert-only here: the search truncates it to 100 characters, so a
+# revisit must never clobber the full text save_course_details fetched.
 _CATALOG_UPSERT = (
     f"INSERT INTO course_versions ({_CATALOG_COLS}) "
     f"VALUES ({', '.join('?' * len(_CATALOG_COLS.split(', ')))}) "
     "ON CONFLICT(subject, course_number, term_effective) DO UPDATE SET "
     + ", ".join(f"{c} = excluded.{c}" for c in _CATALOG_COLS.split(", ")
-                if c not in ("subject", "course_number", "term_effective"))
+                if c not in ("subject", "course_number", "term_effective",
+                             "description"))
 )
 
 
@@ -515,14 +518,17 @@ def save_catalog(conn: sqlite3.Connection, courses) -> None:
 def save_course_details(conn: sqlite3.Connection, details) -> None:
     conn.executemany(
         """INSERT INTO course_versions (subject, course_number, term_effective,
-               prerequisites, corequisites, restrictions, course_attributes,
-               levels, grade_modes, schedule_types, prerequisites_json,
-               restrictions_json)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+               prerequisites, corequisites, restrictions, description,
+               course_attributes, levels, grade_modes, schedule_types,
+               prerequisites_json, restrictions_json)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(subject, course_number, term_effective) DO UPDATE SET
                prerequisites = excluded.prerequisites,
                corequisites = excluded.corequisites,
                restrictions = excluded.restrictions,
+               description = CASE WHEN excluded.description != ''
+                                  THEN excluded.description
+                                  ELSE description END,
                course_attributes = excluded.course_attributes,
                levels = excluded.levels,
                grade_modes = excluded.grade_modes,
@@ -530,8 +536,9 @@ def save_course_details(conn: sqlite3.Connection, details) -> None:
                prerequisites_json = excluded.prerequisites_json,
                restrictions_json = excluded.restrictions_json""",
         [(d.subject, d.course_number, d.term_effective, d.prerequisites,
-          d.corequisites, d.restrictions, d.course_attributes, d.levels,
-          d.grade_modes, d.schedule_types, d.prerequisites_json, d.restrictions_json)
+          d.corequisites, d.restrictions, d.description, d.course_attributes,
+          d.levels, d.grade_modes, d.schedule_types, d.prerequisites_json,
+          d.restrictions_json)
          for d in details])
 
     conn.executemany(

@@ -27,6 +27,7 @@ DETAIL_EPS = {
     "restrictions": "restrictions",
     "course_attributes": "attributes",
     "course_catalog_details": "catalogdetails",
+    "course_description": "description",
 }
 
 

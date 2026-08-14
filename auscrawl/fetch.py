@@ -96,14 +96,17 @@ async def fetch_all_pages(sess: TermSession, endpoint_key: str, term_id: str,
 
 
 _DETAIL_PARTS = ("prereqs", "coreqs", "restrictions", "course_attributes",
-                 "course_catalog_details")
+                 "course_catalog_details", "course_description")
 
 
 async def fetch_course_detail(client: httpx.AsyncClient, term_id: str, subject: str,
                               course_number: str, term_effective: str,
                               rate: RateLimiter | None,
                               max_retries: int = DETAIL_RETRIES) -> CourseDetail:
-    """Fetch the five catalog fragments for one course version.
+    """Fetch the six catalog fragments for one course version.
+
+    The catalog search truncates courseDescription to 100 characters; the
+    getCourseDescription fragment is the only full-text source.
 
     Banner answers 500 for a course that does not exist in the given term, which is
     permanent rather than transient. A fragment that will not load is recorded in
@@ -123,7 +126,7 @@ async def fetch_course_detail(client: httpx.AsyncClient, term_id: str, subject: 
             missing.append(key)
             return b""
 
-    prereq, coreq, restr, attrs, cat = await asyncio.gather(
+    prereq, coreq, restr, attrs, cat, desc = await asyncio.gather(
         *(one(k) for k in _DETAIL_PARTS))
 
     rules = parse_html.parse_prereq_rules(prereq)
@@ -135,6 +138,7 @@ async def fetch_course_detail(client: httpx.AsyncClient, term_id: str, subject: 
         prerequisites=parse_html.fragment_text(prereq),
         corequisites=parse_html.fragment_text(coreq),
         restrictions=parse_html.fragment_text(restr),
+        description=parse_html.fragment_text(desc),
         course_attributes=", ".join(d for d, _ in parse_html.parse_attributes(attrs)),
         levels=details["levels"],
         grade_modes=details["grade_modes"],

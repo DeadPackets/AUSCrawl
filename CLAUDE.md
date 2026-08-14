@@ -53,7 +53,7 @@ auscrawl/
   http.py        RateLimiter (token bucket + AIMD), request_with_retry, make_client, is_blocked
   session.py     TermSession + SessionPool + verify_term — the stateful bind
   parse_json.py  section/catalog JSON -> models, plus the legacy-format helpers
-  parse_html.py  the five HTML detail fragments -> models
+  parse_html.py  the six HTML detail fragments -> models
   fetch.py       one coroutine per endpoint; all network access lives here
   db.py          SCHEMA, additive migration, bulk saves
   pipeline.py    the five phases and run()
@@ -67,8 +67,8 @@ Parsers are pure functions over `str | bytes` and do no I/O, so every parser tes
 1. **Terms** — `getTerms`, 1 stateless request → 101 terms.
 2. **Reference** — `get_subject` and `get_attribute` per term.
 3. **Sections** — a pool of sessions; per term, bind then page `searchResults` at 500/page.
-4. **Catalog** — same pattern against `courseSearchResults`. **Descriptions arrive inline**, so there is no separate description phase.
-5. **Details** — 5 stateless POSTs per unique `(subject, course_number, term_effective)`, one shared session, high parallelism. This is ~40,000 of the ~41,000 total requests.
+4. **Catalog** — same pattern against `courseSearchResults`. Descriptions arrive inline but **truncated to 100 characters** — the full text comes from the `getCourseDescription` fragment in phase 5, and `save_catalog` never overwrites a description on conflict so a revisit cannot clobber the full text.
+5. **Details** — 6 stateless POSTs per unique `(subject, course_number, term_effective)`, one shared session, high parallelism. This is ~44,000 of the ~48,000 total requests.
 
 ### Cross-cutting design points
 
