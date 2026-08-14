@@ -89,7 +89,15 @@ Consequences for the design:
 - `mode=search` (sections) and `mode=courseSearch` (catalog) are also session state.
   Sections and catalog use separate session pools rather than switching modes.
 - A cold session with no bind returns `totalCount: 0, data: null` for sections and
-  HTTP 500 for catalog. Neither is an error the crawler should treat as fatal.
+  HTTP 500 for catalog.
+
+**The empty-result variant is the more dangerous one**, found during the first live
+run. A bind that does not take makes the search answer HTTP 200 with
+`totalCount: 0`, so verifying record terms catches nothing — there are no records to
+check. An unguarded crawler records **zero sections for that term and reports
+success**. Every AUS term has sections, so `fetch_all_pages` treats an empty first
+page as a failed bind: it rebinds once and then raises `EmptyTerm` rather than
+committing the emptiness.
 
 ### 2. Detail endpoints are stateless
 
@@ -187,6 +195,23 @@ queries keep working. Observed formats and their new sources:
 the old parser captured the label instead of the value. The new crawler writes the real
 value (`Lecture`, `Lab`, …). This changes existing data, and it is a fix, not a
 regression; it is called out in the README.
+
+**Banner 9 HTML-escapes text inside its JSON.** `courseTitle` arrives as
+`The Language of the Qur&#39;an`, `college` as `Arts &amp; Sciences`. Every text
+field is passed through `html.unescape`. This was caught by comparing a crawled
+historical term against the shipped database: 65 of 1,694 rows differed by entity
+alone.
+
+**A 500 from a detail endpoint means "no such course in that term"** — permanent,
+not transient. Retrying it five times and then aborting would let one retired course
+kill a 40,000-request phase. Detail fetches use two attempts and record an
+unavailable fragment in `CourseDetail.missing_parts`, reported in the run summary.
+On the newest term this affected 11 of 1,718 course versions.
+
+Section-level title overrides are a second permanent gap. Banner 8 showed titles
+like `Calculus III (Take it with MTH 203R Sec.1)`; the Banner 9 section payload has
+only `courseTitle`. 56 of 1,694 rows in Fall 2015 differ this way. `INSERT OR IGNORE`
+means historical rows keep their richer titles.
 
 `registration_dates` has no equivalent anywhere in Banner 9's public endpoints.
 `getRegistrationDates`, `getSectionRegistrationDates` and `getPartOfTermDates` all 404.
