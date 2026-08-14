@@ -33,17 +33,23 @@ def select_terms(all_terms: list[Semester], opts, existing: set[str]) -> list[Se
     return terms
 
 
-def pending_versions(catalog_courses, done: set) -> list[tuple[str, str, str]]:
-    """Unique (subject, course_number, term_effective) still needing detail calls."""
-    seen: set[tuple[str, str, str]] = set()
-    out: list[tuple[str, str, str]] = []
-    for c in catalog_courses:
-        key = (c.subject, c.course_number, c.term_effective)
-        if not c.term_effective or key in seen or key in done:
-            continue
-        seen.add(key)
-        out.append(key)
-    return out
+def pending_versions(catalog_by_term, done: set) -> list[tuple[str, str, str, str]]:
+    """Unique (subject, course_number, term_effective, query_term) needing details.
+
+    query_term is the newest crawled term where the version appeared. Banner keys
+    descriptions, attributes and catalog details by their own term ranges inside a
+    course version's lifetime, so querying at term_effective returns the version as
+    first published and silently misses everything amended later.
+    """
+    latest: dict[tuple[str, str, str], str] = {}
+    for term_id, courses in catalog_by_term:
+        for c in courses:
+            key = (c.subject, c.course_number, c.term_effective)
+            if not c.term_effective or key in done:
+                continue
+            if term_id > latest.get(key, ""):
+                latest[key] = term_id
+    return [(*key, term) for key, term in latest.items()]
 
 
 async def run_terms(pool, terms: list[str], handler) -> tuple[list[str], list[str]]:
@@ -140,7 +146,7 @@ async def _run(opts) -> list[str]:
             rows = await fetch.fetch_all_pages(sess, "catalog", term_id,
                                                parse_catalog, mode="courseSearch")
             db.save_catalog(conn, rows)
-            catalog_courses.extend(rows)
+            catalog_courses.append((term_id, rows))
             bar.advance(task)
             return len(rows)
 
@@ -148,7 +154,7 @@ async def _run(opts) -> list[str]:
             ok, failed_catalog = await run_terms(
                 pool, [s.term_id for s in terms], one_catalog)
     console.print(f"[green]Catalog:[/green] {len(ok)} terms crawled, "
-                  f"{len(catalog_courses)} rows")
+                  f"{sum(len(rows) for _, rows in catalog_courses)} rows")
     if failed_catalog:
         console.print(f"[red]Catalog:[/red] {len(failed_catalog)} terms failed: "
                       f"{', '.join(failed_catalog)} — re-run with --resume")
@@ -171,10 +177,10 @@ async def _run(opts) -> list[str]:
         with _progress() as bar:
             task = bar.add_task("Details", total=len(pending))
 
-            async def one_detail(subject, number, term_effective):
+            async def one_detail(subject, number, term_effective, query_term):
                 async with sem:
                     d = await fetch.fetch_course_detail(
-                        client, term_effective, subject, number, term_effective, rate)
+                        client, query_term, subject, number, term_effective, rate)
                 if d.missing_parts:
                     incomplete.append(f"{subject}{number}@{term_effective}")
                 batch.append(d)

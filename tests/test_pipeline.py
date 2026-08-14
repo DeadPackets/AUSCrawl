@@ -43,22 +43,30 @@ def test_without_resume_every_term_is_crawled():
 
 
 def test_pending_versions_dedupes_across_terms_and_skips_done():
-    courses = [
-        models.CatalogCourse(subject="ACC", course_number="201", title="T",
-                             term_effective="202610"),
-        models.CatalogCourse(subject="ACC", course_number="201", title="T",
-                             term_effective="202610"),   # same version, other term
-        models.CatalogCourse(subject="CMP", course_number="305", title="T",
-                             term_effective="201510"),
-    ]
-    pending = pipeline.pending_versions(courses, done={("CMP", "305", "201510")})
-    assert pending == [("ACC", "201", "202610")]
+    acc = models.CatalogCourse(subject="ACC", course_number="201", title="T",
+                               term_effective="202610")
+    cmp_ = models.CatalogCourse(subject="CMP", course_number="305", title="T",
+                                term_effective="201510")
+    pending = pipeline.pending_versions(
+        [("202610", [acc, cmp_]), ("202710", [acc])],
+        done={("CMP", "305", "201510")})
+    assert pending == [("ACC", "201", "202610", "202710")]
+
+
+def test_pending_versions_queries_at_the_newest_term_the_version_was_seen():
+    """Banner keys descriptions and attributes by their own term ranges, so the
+    fragment queries must use the newest term the version is in effect."""
+    acc = models.CatalogCourse(subject="ACC", course_number="301", title="T",
+                               term_effective="201210")
+    pending = pipeline.pending_versions(
+        [("202710", [acc]), ("201210", [acc]), ("201610", [acc])], done=set())
+    assert pending == [("ACC", "301", "201210", "202710")]
 
 
 def test_pending_versions_skips_rows_with_no_effective_term():
     courses = [models.CatalogCourse(subject="ACC", course_number="201", title="T",
                                     term_effective="")]
-    assert pipeline.pending_versions(courses, done=set()) == []
+    assert pipeline.pending_versions([("202710", courses)], done=set()) == []
 
 
 async def test_one_failing_term_does_not_discard_the_rest_of_the_crawl():
