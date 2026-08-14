@@ -1,0 +1,299 @@
+
+[
+  {
+    "code": "ACC",
+    "description": "Accounting"
+  },
+  {
+    "code": "ANT",
+    "description": "Anthropology"
+  },
+  {
+    "code": "ARA",
+    "description": "Arabic Language _ Literature"
+  },
+  {
+    "code": "ARC",
+    "description": "Architecture"
+  },
+  {
+    "code": "ART",
+    "description": "Art and Art History"
+  },
+  {
+    "code": "BIO",
+    "description": "Biology"
+  },
+  {
+    "code": "BME",
+    "description": "Biomedical Engineering"
+  },
+  {
+    "code": "BSE",
+    "description": "Biosciences and Bioengineering"
+  },
+  {
+    "code": "BUS",
+    "description": "Business"
+  },
+  {
+    "code": "BDA",
+    "description": "Business Data Analytics"
+  },
+  {
+    "code": "BIS",
+    "description": "Business Information Systems"
+  },
+  {
+    "code": "BLW",
+    "description": "Business Legal Issues"
+  },
+  {
+    "code": "CHE",
+    "description": "Chemical Engineering"
+  },
+  {
+    "code": "CBE",
+    "description": "Chemical and Biological Engg"
+  },
+  {
+    "code": "CHM",
+    "description": "Chemistry"
+  },
+  {
+    "code": "CVE",
+    "description": "Civil Engineering"
+  },
+  {
+    "code": "CEE",
+    "description": "Civil and Environmental Engg"
+  },
+  {
+    "code": "COE",
+    "description": "Computer Engineering"
+  },
+  {
+    "code": "CMP",
+    "description": "Computer Science"
+  },
+  {
+    "code": "CMT",
+    "description": "Construction Management"
+  },
+  {
+    "code": "DAE",
+    "description": "Data Analytics Engineering"
+  },
+  {
+    "code": "DSC",
+    "description": "Data Science"
+  },
+  {
+    "code": "DES",
+    "description": "Design"
+  },
+  {
+    "code": "CEM",
+    "description": "Digitl Cnstrctn Engg and Mngmt"
+  },
+  {
+    "code": "ECO",
+    "description": "Economics"
+  },
+  {
+    "code": "ELE",
+    "description": "Electrical Engineering"
+  },
+  {
+    "code": "ECE",
+    "description": "Electrical and Computer Engg"
+  },
+  {
+    "code": "NGN",
+    "description": "Engineering"
+  },
+  {
+    "code": "EGM",
+    "description": "Engineering Management"
+  },
+  {
+    "code": "ESM",
+    "description": "Engineering Systems/Management"
+  },
+  {
+    "code": "ENG",
+    "description": "English Language"
+  },
+  {
+    "code": "ELP",
+    "description": "English Language Preparation"
+  },
+  {
+    "code": "ELT",
+    "description": "English Language Teaching"
+  },
+  {
+    "code": "ENV",
+    "description": "Environmental Sciences"
+  },
+  {
+    "code": "ENS",
+    "description": "Envrnmntl Sustainblty and Mgt"
+  },
+  {
+    "code": "FLM",
+    "description": "Film"
+  },
+  {
+    "code": "FMD",
+    "description": "Film and New Media Design"
+  },
+  {
+    "code": "FIN",
+    "description": "Finance"
+  },
+  {
+    "code": "FRN",
+    "description": "French"
+  },
+  {
+    "code": "GRD",
+    "description": "Graphic Design"
+  },
+  {
+    "code": "HIS",
+    "description": "History"
+  },
+  {
+    "code": "INE",
+    "description": "Industrial Engineering"
+  },
+  {
+    "code": "ISA",
+    "description": "Infrmtn Systms_Bus Analytcs"
+  },
+  {
+    "code": "IEN",
+    "description": "Innovation and Entrepreneurshp"
+  },
+  {
+    "code": "ISM",
+    "description": "Intelligent Systems _ MTR Engg"
+  },
+  {
+    "code": "IDS",
+    "description": "Interdisciplinary Studies"
+  },
+  {
+    "code": "IDE",
+    "description": "Interior Design"
+  },
+  {
+    "code": "INS",
+    "description": "International Studies"
+  },
+  {
+    "code": "MLR",
+    "description": "Machine Learning"
+  },
+  {
+    "code": "MGT",
+    "description": "Management"
+  },
+  {
+    "code": "MKT",
+    "description": "Marketing"
+  },
+  {
+    "code": "MBA",
+    "description": "Master of Business Admin"
+  },
+  {
+    "code": "MSE",
+    "description": "Materials Sc and Engineering"
+  },
+  {
+    "code": "MTH",
+    "description": "Math"
+  },
+  {
+    "code": "MCE",
+    "description": "Mechanical Engineering"
+  },
+  {
+    "code": "MTR",
+    "description": "Mechatronics"
+  },
+  {
+    "code": "MDC",
+    "description": "Media Communication"
+  },
+  {
+    "code": "MSP",
+    "description": "Media Studies and Practice"
+  },
+  {
+    "code": "MUS",
+    "description": "Music"
+  },
+  {
+    "code": "PHI",
+    "description": "Philosophy"
+  },
+  {
+    "code": "PHY",
+    "description": "Physics"
+  },
+  {
+    "code": "POL",
+    "description": "Political Science"
+  },
+  {
+    "code": "PSY",
+    "description": "Psychology"
+  },
+  {
+    "code": "QBA",
+    "description": "Quantitative Business Analysis"
+  },
+  {
+    "code": "SOC",
+    "description": "Sociology"
+  },
+  {
+    "code": "SPN",
+    "description": "Spanish"
+  },
+  {
+    "code": "STA",
+    "description": "Statistics"
+  },
+  {
+    "code": "ABRD",
+    "description": "Study Abroad Credit(s)"
+  },
+  {
+    "code": "SCM",
+    "description": "Supply Chain Management"
+  },
+  {
+    "code": "THE",
+    "description": "Theatre"
+  },
+  {
+    "code": "TRD",
+    "description": "Trans-Disciplinary Design"
+  },
+  {
+    "code": "TRA",
+    "description": "Translation"
+  },
+  {
+    "code": "UPL",
+    "description": "Urban Planning"
+  },
+  {
+    "code": "WRI",
+    "description": "Writing Studies"
+  }
+]

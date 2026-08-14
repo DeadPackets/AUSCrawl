@@ -26,3 +26,15 @@ def manifest() -> dict:
 
 def read_fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+B9 = FIXTURES / "banner9"
+
+
+@pytest.fixture(scope="session")
+def b9_dir() -> Path:
+    return B9
+
+
+def read_b9(name: str) -> bytes:
+    return (B9 / name).read_bytes()
