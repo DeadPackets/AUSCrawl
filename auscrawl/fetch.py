@@ -21,6 +21,10 @@ _REF_ENDPOINTS = {"subject": "ref_subject", "instructor": "ref_instructor",
 # no amount of retrying fixes. Two attempts covers the genuinely transient case.
 DETAIL_RETRIES = 2
 
+# Search pages get few HTTP-level retries because the real recovery is the term-level
+# rebind in fetch_all_pages, not another identical request.
+PAGE_RETRIES = 2
+
 
 async def fetch_terms(client: httpx.AsyncClient, rate: RateLimiter | None):
     resp = await request_with_retry(
@@ -46,29 +50,41 @@ async def fetch_all_pages(sess: TermSession, endpoint_key: str, term_id: str,
                           parser: Callable, mode: str) -> list:
     """Bind the term, then page through the endpoint until totalCount is covered.
 
-    A bind that does not take is not an error to Banner: the search answers HTTP 200
-    with totalCount 0, so an unguarded crawler would record zero sections for the
-    term and never notice. Every AUS term has sections, so an empty first page means
-    the bind failed — rebind once, then refuse to record the emptiness.
+    A bind that does not take shows up two ways, and neither is fixable by retrying
+    the page request itself — only a rebind helps, so the retry lives here:
+
+    * sections answer HTTP 200 with totalCount 0, so an unguarded crawler would
+      record zero sections for the term and never notice;
+    * the catalog answers HTTP 500.
+
+    Every AUS term has rows, so either symptom means rebind and start the term over.
     """
+    last_error: Exception | None = None
     for attempt in (1, 2):
-        await sess.bind(term_id, mode)
-        out: list = []
-        offset = 0
-        while True:
-            raw = await sess.fetch_page(endpoint_key, term_id, offset)
-            total, rows = parser(raw, term_id)
-            out.extend(rows)
-            offset += config.PAGE_SIZE
-            if offset >= total or not rows:
-                break
-        if total or out:
-            return out
-        log.warning("%s for term %s came back empty; rebinding (attempt %d)",
-                    endpoint_key, term_id, attempt)
+        try:
+            await sess.bind(term_id, mode)
+            out: list = []
+            offset = 0
+            while True:
+                raw = await sess.fetch_page(endpoint_key, term_id, offset,
+                                            max_retries=PAGE_RETRIES)
+                total, rows = parser(raw, term_id)
+                out.extend(rows)
+                offset += config.PAGE_SIZE
+                if offset >= total or not rows:
+                    break
+            if total or out:
+                return out
+            log.warning("%s for term %s came back empty; rebinding (attempt %d)",
+                        endpoint_key, term_id, attempt)
+        except (httpx.HTTPError, RuntimeError) as e:
+            last_error = e
+            log.warning("%s for term %s failed (%s); rebinding (attempt %d)",
+                        endpoint_key, term_id, e, attempt)
 
     raise EmptyTerm(f"{endpoint_key} returned no rows for term {term_id} after a "
-                    f"rebind; the session bind is not taking")
+                    f"rebind; the session bind is not taking"
+                    + (f" (last error: {last_error})" if last_error else ""))
 
 
 _DETAIL_PARTS = ("prereqs", "coreqs", "restrictions", "course_attributes",

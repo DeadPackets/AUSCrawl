@@ -57,7 +57,8 @@ class TermSession:
         self.term = term_id
         self.mode = mode
 
-    async def fetch_page(self, endpoint_key: str, term_id: str, offset: int) -> bytes:
+    async def fetch_page(self, endpoint_key: str, term_id: str, offset: int,
+                         max_retries: int | None = None) -> bytes:
         if self.term != term_id:
             raise TermMismatch(
                 f"session is bound to {self.term}, refusing to fetch {term_id}"
@@ -71,7 +72,7 @@ class TermSession:
                 "sortColumn": "subjectDescription",
                 "sortDirection": "asc",
             },
-            rate=self.rate,
+            rate=self.rate, max_retries=max_retries,
         )
         verify_term(resp.json(), term_id)
         return resp.content

@@ -153,3 +153,93 @@ def test_resume_helpers_report_what_is_already_stored(tmp_path):
         subject="ACC", course_number="201", term_effective="202610",
         levels="Undergraduate")])
     assert ("ACC", "201", "202610") in db.done_course_versions(conn)
+
+
+# --- upgrading a database that already has rows -------------------------------
+
+def test_recrawling_fills_the_new_columns_on_pre_existing_rows(tmp_path):
+    """INSERT OR IGNORE alone would leave every Banner 9 column empty when the
+    crawler is pointed at the shipped snapshot, which is the documented upgrade
+    path. The row must be updated in place."""
+    conn = db.init_db(str(tmp_path / "up.db"))
+    # a row as the Banner 8 crawler left it: no seat counts, no building/room
+    conn.execute("""INSERT INTO courses (crn, term_id, subject, course_number, title,
+                        class_type, days, start_time, schedule_type,
+                        registration_dates, classroom)
+                    VALUES ('10394','202710','ACC','201',
+                            'Fund of Financial Accounting (special)','Class','MW',
+                            '11:00 am','Schedule Type','Apr 13, 2026 to Aug 31, 2026',
+                            'School of Business Administrtn 1104')""")
+    conn.commit()
+
+    db.save_sections(conn, [_section()])
+
+    row = conn.execute("""SELECT enrollment, max_enrollment, seats_available_count,
+                                 building, room, part_of_term, schedule_type,
+                                 registration_dates, title
+                          FROM courses WHERE crn='10394'""").fetchone()
+    assert row[0] == 18 and row[1] == 18 and row[2] == 0
+    assert row[3] == "SBA" and row[4] == "1104"
+    assert row[6] == "Lecture", "the old 'Schedule Type' parser bug must be corrected"
+    assert row[7] == "Apr 13, 2026 to Aug 31, 2026", "registration_dates has no source"
+    assert row[8] == "Fund of Financial Accounting (special)", \
+        "the richer Banner 8 section title must survive"
+    assert conn.execute("SELECT COUNT(*) FROM courses").fetchone()[0] == 1
+
+
+def test_a_longer_title_from_banner9_replaces_a_shorter_stored_one(tmp_path):
+    conn = db.init_db(str(tmp_path / "up2.db"))
+    conn.execute("""INSERT INTO courses (crn, term_id, subject, course_number, title,
+                        class_type, days, start_time)
+                    VALUES ('10394','202710','ACC','201','Fund','Class','MW',
+                            '11:00 am')""")
+    conn.commit()
+    db.save_sections(conn, [_section()])
+    assert conn.execute(
+        "SELECT title FROM courses WHERE crn='10394'"
+    ).fetchone()[0] == "Fund of Financial Accounting"
+
+
+def test_recrawling_backfills_instructor_banner_ids(tmp_path):
+    conn = db.init_db(str(tmp_path / "up3.db"))
+    conn.execute("INSERT INTO instructors (name, email, first_seen) "
+                 "VALUES ('Karen Hawa','khawa@aus.edu','200520')")
+    conn.execute("INSERT INTO section_instructors (crn, term_id, name, email) "
+                 "VALUES ('10394','202710','Karen Hawa','khawa@aus.edu')")
+    conn.commit()
+    db.save_sections(conn, [_section()])
+    row = conn.execute(
+        "SELECT banner_id, first_seen FROM instructors WHERE name='Karen Hawa'"
+    ).fetchone()
+    assert row[0] == "220388"
+    assert row[1] == "200520", "first_seen must not be pushed forward"
+    assert conn.execute(
+        "SELECT banner_id, is_primary FROM section_instructors WHERE crn='10394'"
+    ).fetchone() == ("220388", 1)
+
+
+def test_recrawling_updates_a_meeting_whose_room_changed(tmp_path):
+    conn = db.init_db(str(tmp_path / "up4.db"))
+    db.save_sections(conn, [_section()])
+    s = _section()
+    s.meetings[0].room = "9999"
+    db.save_sections(conn, [s])
+    assert conn.execute(
+        "SELECT room FROM meetings WHERE crn='10394'").fetchone()[0] == "9999"
+    assert conn.execute("SELECT COUNT(*) FROM meetings").fetchone()[0] == 1
+
+
+def test_recrawling_refreshes_catalog_version_text_without_losing_details(tmp_path):
+    conn = db.init_db(str(tmp_path / "up5.db"))
+    db.save_catalog(conn, [models.CatalogCourse(
+        subject="ACC", course_number="201", title="T", term_effective="202610",
+        description="old")])
+    db.save_course_details(conn, [models.CourseDetail(
+        subject="ACC", course_number="201", term_effective="202610",
+        levels="Undergraduate", prerequisites="MTH 104")])
+    db.save_catalog(conn, [models.CatalogCourse(
+        subject="ACC", course_number="201", title="T", term_effective="202610",
+        description="revised")])
+    row = conn.execute("""SELECT description, levels, prerequisites
+                          FROM catalog_versions WHERE subject='ACC'""").fetchone()
+    assert row == ("revised", "Undergraduate", "MTH 104")

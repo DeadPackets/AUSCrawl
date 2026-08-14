@@ -176,3 +176,40 @@ async def test_a_term_that_stays_empty_raises_rather_than_recording_zero():
         with pytest.raises(fetch.EmptyTerm):
             await fetch.fetch_all_pages(sess, "sections", "202710",
                                         parse_sections, mode="search")
+
+
+async def test_a_failing_page_rebinds_and_retries_the_term():
+    """A 500 from the catalog endpoint means the session is not bound. Retrying the
+    same GET cannot fix that — only a rebind can, so the retry lives at term level."""
+    state = {"binds": 0}
+
+    def handler(request):
+        if request.url.path.endswith("/term/search"):
+            state["binds"] += 1
+            return httpx.Response(200, json={"fwdURL": "/x"})
+        if request.url.path.endswith("/termSelection"):
+            return httpx.Response(200, text="")
+        if state["binds"] < 2:                       # first bind silently did not take
+            return httpx.Response(500, text="<html>Ellucian error page</html>")
+        return httpx.Response(200, json=json.loads(read_b9("sections_202710_p0.json")))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        sess = session.TermSession(c)
+        rows = await fetch.fetch_all_pages(sess, "catalog", "202710",
+                                           parse_sections, mode="courseSearch")
+
+    assert state["binds"] == 2
+    assert len(rows) > 0
+
+
+async def test_a_term_that_fails_both_attempts_raises():
+    def handler(request):
+        if "/term/" in request.url.path:
+            return httpx.Response(200, json={"fwdURL": "/x"})
+        return httpx.Response(500, text="boom")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        sess = session.TermSession(c)
+        with pytest.raises((fetch.EmptyTerm, RuntimeError)):
+            await fetch.fetch_all_pages(sess, "catalog", "202710",
+                                        parse_sections, mode="courseSearch")

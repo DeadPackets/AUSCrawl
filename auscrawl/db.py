@@ -293,28 +293,60 @@ def _course_rows(s):
         yield head + sched + who + (is_lab,) + counts[:1] + place + counts[1:]
 
 
-def save_sections(conn: sqlite3.Connection, sections) -> None:
-    """Insert sections, meetings and instructors.
+# Columns refreshed when a row already exists. Everything Banner 9 serves is
+# refreshed, because pointing the crawler at the shipped snapshot is the documented
+# upgrade path and INSERT OR IGNORE alone would leave every new column empty.
+# Deliberately absent:
+#   registration_dates — Banner 9 has no source; writing would erase real values
+#   title              — handled separately so a richer Banner 8 section title
+#                        ("Calculus III (Take it with MTH 203R Sec.1)") survives
+_COURSE_UPDATE_COLS = [
+    c for c in _COURSE_COLS.split(", ")
+    if c not in ("crn", "term_id", "class_type", "days", "start_time", "title")
+]
 
-    Sorted by term so INSERT OR IGNORE keeps the earliest occurrence, which is how
-    first_seen comes out right for free. registration_dates is deliberately absent
-    from the column list: Banner 9 has no source for it, and writing would erase
-    values the old crawler collected.
+_COURSE_UPSERT = (
+    f"INSERT INTO courses ({_COURSE_COLS}) "
+    f"VALUES ({', '.join('?' * len(_COURSE_COLS.split(', ')))}) "
+    "ON CONFLICT(crn, term_id, class_type, days, start_time) DO UPDATE SET "
+    + ", ".join(f"{c} = excluded.{c}" for c in _COURSE_UPDATE_COLS)
+    + ", title = CASE WHEN length(excluded.title) > length(courses.title) "
+      "THEN excluded.title ELSE courses.title END"
+)
+
+
+def save_sections(conn: sqlite3.Connection, sections) -> None:
+    """Insert or refresh sections, meetings and instructors.
+
+    Sorted by term so the first write of an entity is its earliest occurrence, which
+    is how first_seen comes out right for free.
     """
     ordered = sorted(sections, key=lambda s: s.term_id)
-    n_cols = len(_COURSE_COLS.split(", "))
     conn.executemany(
-        f"INSERT OR IGNORE INTO courses ({_COURSE_COLS}) "
-        f"VALUES ({', '.join('?' * n_cols)})",
+        _COURSE_UPSERT,
         [r for s in ordered for r in _course_rows(s)],
     )
     conn.executemany(
-        """INSERT OR IGNORE INTO meetings (
+        """INSERT INTO meetings (
                crn, term_id, meeting_index, meeting_type, meeting_type_desc,
                begin_time, end_time, monday, tuesday, wednesday, thursday, friday,
                saturday, sunday, building, building_name, room, campus, campus_desc,
                start_date, end_date, hours_week, credit_hour_session, schedule_type)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(crn, term_id, meeting_index) DO UPDATE SET
+               meeting_type = excluded.meeting_type,
+               meeting_type_desc = excluded.meeting_type_desc,
+               begin_time = excluded.begin_time, end_time = excluded.end_time,
+               monday = excluded.monday, tuesday = excluded.tuesday,
+               wednesday = excluded.wednesday, thursday = excluded.thursday,
+               friday = excluded.friday, saturday = excluded.saturday,
+               sunday = excluded.sunday, building = excluded.building,
+               building_name = excluded.building_name, room = excluded.room,
+               campus = excluded.campus, campus_desc = excluded.campus_desc,
+               start_date = excluded.start_date, end_date = excluded.end_date,
+               hours_week = excluded.hours_week,
+               credit_hour_session = excluded.credit_hour_session,
+               schedule_type = excluded.schedule_type""",
         [(m.crn, m.term_id, m.meeting_index, m.meeting_type, m.meeting_type_desc,
           m.begin_time, m.end_time, int(m.monday), int(m.tuesday), int(m.wednesday),
           int(m.thursday), int(m.friday), int(m.saturday), int(m.sunday),
@@ -323,15 +355,20 @@ def save_sections(conn: sqlite3.Connection, sections) -> None:
           m.schedule_type)
          for s in ordered for m in s.meetings],
     )
+    # first_seen is never updated — the earliest write wins, which is what makes the
+    # term-ordered insert above produce a correct first_seen for free.
     conn.executemany(
-        "INSERT OR IGNORE INTO instructors (name, email, first_seen, banner_id) "
-        "VALUES (?,?,?,?)",
+        "INSERT INTO instructors (name, email, first_seen, banner_id) "
+        "VALUES (?,?,?,?) "
+        "ON CONFLICT(name, email) DO UPDATE SET banner_id = excluded.banner_id",
         [(i.name, i.email, s.term_id, i.banner_id)
          for s in ordered for i in s.instructors],
     )
     conn.executemany(
-        "INSERT OR IGNORE INTO section_instructors "
-        "(crn, term_id, name, email, is_primary, banner_id) VALUES (?,?,?,?,?,?)",
+        "INSERT INTO section_instructors "
+        "(crn, term_id, name, email, is_primary, banner_id) VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(crn, term_id, name) DO UPDATE SET email = excluded.email, "
+        "is_primary = excluded.is_primary, banner_id = excluded.banner_id",
         [(s.crn, s.term_id, i.name, i.email, int(i.is_primary), i.banner_id)
          for s in ordered for i in s.instructors],
     )
@@ -342,16 +379,30 @@ def save_sections(conn: sqlite3.Connection, sections) -> None:
     conn.commit()
 
 
+# Only the columns save_catalog owns. The detail columns (prerequisites, levels,
+# grade_modes, …) belong to save_course_details and must not be reset to defaults
+# when a later term's catalog page revisits the same course version.
+_CATALOG_UPDATE_COLS = (
+    "term_start", "term_end", "title", "description", "college", "college_code",
+    "department", "department_code", "credit_hours_low", "credit_hours_high",
+    "lecture_hours_low", "lecture_hours_high", "lab_hours_low", "lab_hours_high",
+    "other_hours_low", "other_hours_high", "bill_hours_low", "bill_hours_high",
+    "prereq_check_method",
+)
+
+
 def save_catalog(conn: sqlite3.Connection, courses) -> None:
     """Write every version, then refresh the flat table from the newest one."""
     conn.executemany(
-        """INSERT OR IGNORE INTO catalog_versions (
+        """INSERT INTO catalog_versions (
                subject, course_number, term_effective, term_start, term_end, title,
                description, college, college_code, department, department_code,
                credit_hours_low, credit_hours_high, lecture_hours_low,
                lecture_hours_high, lab_hours_low, lab_hours_high, other_hours_low,
                other_hours_high, bill_hours_low, bill_hours_high, prereq_check_method)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(subject, course_number, term_effective) DO UPDATE SET """
+        + ", ".join(f"{c} = excluded.{c}" for c in _CATALOG_UPDATE_COLS),
         [(c.subject, c.course_number, c.term_effective, c.term_start, c.term_end,
           c.title, c.description, c.college, c.college_code, c.department,
           c.department_code, c.credit_hours_low, c.credit_hours_high,
