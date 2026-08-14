@@ -44,16 +44,22 @@ def pending_versions(catalog_by_term,
     the version as first published and silently misses everything amended later.
     has_description mirrors the inline (truncated) copy at that newest term; when it
     is null the full-text fragment is empty too, so the fetch can be skipped.
+
+    done only skips versions that are frozen. A version still visible in the newest
+    crawled term is mutable — Banner amends live versions in place — so it is
+    re-fetched even when the database already holds details for it.
     """
+    newest = max((t for t, _ in catalog_by_term), default="")
     latest: dict[tuple[str, str, str], tuple[str, bool]] = {}
     for term_id, courses in catalog_by_term:
         for c in courses:
             key = (c.subject, c.course_number, c.term_effective)
-            if not c.term_effective or key in done:
+            if not c.term_effective:
                 continue
             if term_id > latest.get(key, ("", False))[0]:
                 latest[key] = (term_id, bool(c.description))
-    return [(*key, term, has_desc) for key, (term, has_desc) in latest.items()]
+    return [(*key, term, has_desc) for key, (term, has_desc) in latest.items()
+            if key not in done or term == newest]
 
 
 async def run_terms(pool, terms: list[str], handler) -> tuple[list[str], list[str]]:

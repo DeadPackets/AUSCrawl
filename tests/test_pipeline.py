@@ -65,6 +65,18 @@ def test_pending_versions_queries_at_the_newest_term_the_version_was_seen():
     assert pending == [("ACC", "301", "201210", "202710", True)]
 
 
+def test_a_version_live_in_the_newest_term_refetches_even_when_done():
+    """Banner amends live versions in place, so done only skips frozen history."""
+    live = models.CatalogCourse(subject="ACC", course_number="201", title="T",
+                                term_effective="202610")
+    frozen = models.CatalogCourse(subject="CMP", course_number="305", title="T",
+                                  term_effective="201510")
+    pending = pipeline.pending_versions(
+        [("202510", [frozen]), ("202710", [live])],
+        done={("ACC", "201", "202610"), ("CMP", "305", "201510")})
+    assert pending == [("ACC", "201", "202610", "202710", False)]
+
+
 def test_pending_versions_skips_rows_with_no_effective_term():
     courses = [models.CatalogCourse(subject="ACC", course_number="201", title="T",
                                     term_effective="")]

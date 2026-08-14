@@ -20,7 +20,7 @@ Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/).
 # Run the crawler (writes to aus_data.db by default — NOT the shipped aus_courses.db)
 uv run --project . python crawl.py [options]
 
-uv run --project . python crawl.py --latest          # refresh the newest term (~500 requests, <1 min)
+uv run --project . python crawl.py --latest          # refresh the newest term (~10k requests, ~5 min)
 uv run --project . python crawl.py -t 202620 202510  # specific term IDs
 uv run --project . python crawl.py --resume          # skip terms already in the DB
 uv run --project . python crawl.py --import-legacy aus_courses.db  # Banner 8 leftovers
@@ -105,6 +105,6 @@ The legacy value formats live in `_time_12h`, `_date_long`, `_DAYS` and `_CLASSR
 - `courses.schedule_type` used to hold the literal string `"Schedule Type"` for every row — an old parser bug capturing the label instead of the value. It now holds the real value.
 - `section_details.fees` and `corequisites_json` are always empty: AUS publishes no fee data and Banner 9 gives corequisites as prose, not a table.
 
-**Refreshing the shipped DB:** for a routine refresh, run `--latest` against the existing file — it re-crawls only the newest term and fetches details only for course versions not yet in the DB (~500 requests, under a minute). For a full rebuild, crawl into a fresh file with `--import-legacy aus_courses.db` (~25 minutes for all 101 terms as AIMD climbs from the default 10 req/s), cross-check a few terms with `scripts/crosscheck.py`, then checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)` + `journal_mode=DELETE`) and swap the file in.
+**Refreshing the shipped DB:** for a routine refresh, run `--latest` against the existing file — it re-crawls the newest term and re-fetches details for the course versions live in it (Banner amends live versions in place; frozen history is never re-crawled). ~10,000 requests, ~5 minutes. For a full rebuild, crawl into a fresh file with `--import-legacy aus_courses.db` (~25 minutes for all 101 terms as AIMD climbs from the default 10 req/s), cross-check a few terms with `scripts/crosscheck.py`, then checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)` + `journal_mode=DELETE`) and swap the file in.
 
 The Banner 9 endpoint reference lives in README.md under "Banner Technical Details"; the design rationale is in `docs/superpowers/specs/2026-08-14-banner9-rewrite-design.md`.
