@@ -40,6 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="skip the catalog phase (and details, which depend on it)")
     p.add_argument("--no-details", action="store_true",
                    help="skip the per-course detail phase")
+    p.add_argument("--import-legacy", metavar="OLD_DB",
+                   help="copy registration_dates and Banner 8 section titles out of "
+                        "an old database; no Banner 9 endpoint serves them")
     p.add_argument("--rate", type=_rate, default=config.DEFAULT_RATE,
                    help=f"target requests per second (default: {config.DEFAULT_RATE})")
     p.add_argument("-v", "--verbose", action="store_true", help="debug logging")

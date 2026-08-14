@@ -89,7 +89,7 @@ async def test_fetch_course_detail_merges_five_fragments():
     assert d.prerequisites_json.startswith('{"type":"and"')
     assert d.corequisites == ""
     assert "Undergraduate" in d.levels
-    assert d.grade_modes == "Standard Letter S"
+    assert d.grade_modes == "Standard Letter"
     assert "Colleges" in d.restrictions_json
     assert "Actuarial Math Minor_Elective" in d.course_attributes
 

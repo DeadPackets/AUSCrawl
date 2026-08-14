@@ -15,6 +15,9 @@ RE_RESTR_HEADER = re.compile(
     re.IGNORECASE,
 )
 RE_ATTR = re.compile(r"^(.*\S)\s+([A-Z][A-Z0-9]{1,5})$")
+# Banner appends its short code to each value ("Undergraduate UG"); the
+# published database has always stored the name alone.
+RE_TRAILING_CODE = re.compile(r"^(.*\S)\s+[A-Z][A-Z0-9]{0,3}$")
 
 # Banner separates items with <br/>, but starts a new labelled section with a bold
 # span or a div without any <br/> in between — so both need to become line breaks.
@@ -207,4 +210,9 @@ def parse_catalog_details(raw: str | bytes) -> dict:
             continue
         if key:
             buckets[key].append(line)
-    return {k: ", ".join(v) for k, v in buckets.items()}
+    return {k: ", ".join(strip_code(x) for x in v) for k, v in buckets.items()}
+
+
+def strip_code(value: str) -> str:
+    m = RE_TRAILING_CODE.match(value)
+    return m.group(1) if m else value

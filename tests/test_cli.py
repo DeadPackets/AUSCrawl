@@ -38,3 +38,9 @@ def test_rate_of_zero_is_rejected():
 def test_crawl_shim_still_exposes_main():
     import crawl
     assert callable(crawl.main)
+
+
+def test_import_legacy_flag_parses():
+    a = cli.build_parser().parse_args(["--import-legacy", "aus_courses.db"])
+    assert a.import_legacy == "aus_courses.db"
+    assert cli.build_parser().parse_args([]).import_legacy is None

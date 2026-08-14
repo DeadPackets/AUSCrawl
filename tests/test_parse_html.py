@@ -132,9 +132,9 @@ def test_attributes_parse_into_description_and_code_pairs():
 
 def test_catalog_details_yield_levels_grade_modes_and_schedule_types():
     d = parse_html.parse_catalog_details(read_b9("catalogdetails_MTH203.html"))
-    assert d["levels"] == "Graduate GR, Post Bachelor PB, Undergraduate UG"
-    assert d["grade_modes"] == "Standard Letter S"
-    assert d["schedule_types"] == "Lecture L"
+    assert d["levels"] == "Graduate, Post Bachelor, Undergraduate"
+    assert d["grade_modes"] == "Standard Letter"
+    assert d["schedule_types"] == "Lecture"
 
 
 def test_catalog_details_do_not_leak_the_title_or_hours_sections():
@@ -147,3 +147,20 @@ def test_catalog_details_do_not_leak_the_title_or_hours_sections():
 def test_catalog_details_on_a_sparse_fragment_do_not_crash():
     assert parse_html.parse_catalog_details(b"<section></section>") == {
         "levels": "", "grade_modes": "", "schedule_types": ""}
+
+
+def test_catalog_details_drop_the_trailing_codes():
+    """The published database has always stored level and schedule-type names
+    without Banner's short codes ('Undergraduate', not 'Undergraduate UG')."""
+    d = parse_html.parse_catalog_details(read_b9("catalogdetails_MTH203.html"))
+    assert d["levels"] == "Graduate, Post Bachelor, Undergraduate"
+    assert d["grade_modes"] == "Standard Letter"
+    assert d["schedule_types"] == "Lecture"
+
+
+def test_a_value_with_no_trailing_code_is_left_alone():
+    assert parse_html.strip_code("Undergraduate") == "Undergraduate"
+    assert parse_html.strip_code("Graduate_Second Degree GS") == \
+        "Graduate_Second Degree"
+    assert parse_html.strip_code("Standard Letter S") == "Standard Letter"
+    assert parse_html.strip_code("") == ""

@@ -86,6 +86,9 @@ async def run(opts) -> int:
 
 async def _run(opts) -> list[str]:
     conn = db.init_db(opts.output, force=opts.force)
+    if getattr(opts, "import_legacy", None):
+        n = db.import_legacy_extras(conn, opts.import_legacy)
+        console.print(f"[green]Legacy:[/green] imported extras for {n} sections")
     rate = RateLimiter(opts.rate, max_rate=config.MAX_RATE, min_rate=config.MIN_RATE)
 
     async with make_client(4) as meta_client:
