@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An async crawler for **Ellucian Banner 9** (`register.aus.edu/StudentRegistrationSsb/ssb`) that pulls ~21 years of AUS course data into SQLite, plus a **pre-built database** (`aus_courses.db`, ~115 MB, shipped via GitHub Releases) that is the actual product. Most work here is querying or building on top of `aus_courses.db`, **not** running the crawler.
+An async crawler for **Ellucian Banner 9** (`register.aus.edu/StudentRegistrationSsb/ssb`) that pulls ~21 years of AUS course data into SQLite, plus a **pre-built database** (`aus_courses.db`, ~59 MB, shipped via GitHub Releases) that is the actual product. Most work here is querying or building on top of `aus_courses.db`, **not** running the crawler.
 
 The code lives in the `auscrawl/` package; `crawl.py` is a thin shim so the documented commands still work.
 

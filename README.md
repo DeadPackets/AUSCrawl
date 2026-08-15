@@ -8,7 +8,7 @@
     <img src="https://img.shields.io/badge/python-3.13+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.13+">
     <img src="https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite">
     <img src="https://img.shields.io/badge/HTTP%2F2-async-blue?style=flat-square" alt="HTTP/2 Async">
-    <img src="https://img.shields.io/badge/database-114%20MB-orange?style=flat-square" alt="Database 114 MB">
+    <img src="https://img.shields.io/badge/database-59%20MB-orange?style=flat-square" alt="Database 59 MB">
     <br/>
     <img src="https://img.shields.io/badge/sections-74%2C000%2B-green?style=flat-square" alt="74,000+ sections">
     <img src="https://img.shields.io/badge/semesters-101-green?style=flat-square" alt="101 semesters">
@@ -20,7 +20,7 @@
 ---
 
 > [!WARNING]
-> **Do not run the crawler unless you know what you are doing.** A full crawl makes ~42,000 requests to AUS Banner and can overwhelm the server if misconfigured, which can result in service disruption and get you in trouble with the university. A pre-built database (`aus_courses.db`) is already included in this repository with a complete snapshot of all course data since 2005 — **use that instead.**
+> **Do not run the crawler unless you know what you are doing.** A full crawl makes ~42,000 requests to AUS Banner and can overwhelm the server if misconfigured, which can result in service disruption and get you in trouble with the university. A pre-built database (`aus_courses.db`) with a complete snapshot of all course data since 2005 is available as a [release download](https://github.com/DeadPackets/AUSCrawl/releases/latest) — **use that instead.**
 
 ## What is this?
 
@@ -32,7 +32,7 @@ Written in Python. Around 25 minutes for a full crawl of 74,000+ sections, every
 
 ## The Database
 
-Every [release](https://github.com/DeadPackets/AUSCrawl/releases/latest) ships **`aus_courses.db`** (gzipped, ~16 MB), a complete SQLite database containing every course, instructor, prerequisite, and catalog description from AUS Banner since Fall 2005. Just download it, `gunzip`, and start building. (It's distributed as a release asset rather than committed to the repo so clones stay small.)
+Every [release](https://github.com/DeadPackets/AUSCrawl/releases/latest) ships **`aus_courses.db`** (gzipped, ~13 MB), a complete SQLite database containing every course, instructor, prerequisite, and catalog description from AUS Banner since Spring 2005. Just download it, `gunzip`, and start building. (It's distributed as a release asset rather than committed to the repo so clones stay small.)
 
 <table>
 <tr><th>Table</th><th>Description</th></tr>
@@ -67,7 +67,7 @@ If you build something with this data, open an issue and let us know — we'd lo
 ### Getting Started
 
 ```bash
-# Download the latest database (compressed, ~16 MB) from Releases
+# Download the latest database (compressed, ~13 MB) from Releases
 curl -L -o aus_courses.db.gz \
   https://github.com/DeadPackets/AUSCrawl/releases/latest/download/aus_courses.db.gz
 gunzip aus_courses.db.gz
@@ -232,7 +232,7 @@ Base URL: `https://register.aus.edu/StudentRegistrationSsb/ssb`
 
 ### Rate limiting
 
-Measured headroom is high: 40 requests at concurrency 16 completed at ~174 req/s with zero 429s. **Headroom is not permission.** The default target is **10 req/s**, paced by a global token-bucket limiter with AIMD backoff, which puts a full 101-term crawl at roughly an hour. Neither `register.aus.edu` nor `banner.aus.edu` serves a `robots.txt`, so the limit is a self-imposed courtesy.
+Measured headroom is high: 40 requests at concurrency 16 completed at ~174 req/s with zero 429s. **Headroom is not permission.** The default start is **10 req/s**, paced by a global token-bucket limiter with AIMD feedback that climbs toward 30 req/s while Banner stays healthy and halves on any throttle, which puts a full 101-term crawl at roughly 25 minutes. Neither `register.aus.edu` nor `banner.aus.edu` serves a `robots.txt`, so the limit is a self-imposed courtesy.
 
 ### Known gaps
 
