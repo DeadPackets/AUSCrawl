@@ -1,7 +1,6 @@
 import json
 
 from auscrawl import parse_html
-from auscrawl.models import PrereqRule
 from tests.conftest import read_b9
 
 # --- prerequisite table ------------------------------------------------------
@@ -74,14 +73,6 @@ def test_no_prerequisites_yields_no_rules_and_no_tree():
 def test_prereq_json_is_valid_json():
     rules = parse_html.parse_prereq_rules(read_b9("prereqs_CMP305.html"))
     assert json.loads(parse_html.prereq_json(rules))["type"] == "and"
-
-
-def test_rule_label_renders_a_readable_line():
-    course = PrereqRule(seq=0, req_subject="Math", req_course_number="104",
-                        req_level="Undergraduate", min_grade="C-")
-    assert parse_html.rule_label(course) == "Math 104 (Undergraduate, min grade C-)"
-    test = PrereqRule(seq=1, test_code="SAT Subject Math Level 2", test_score="600")
-    assert parse_html.rule_label(test) == "SAT Subject Math Level 2 >= 600"
 
 
 # --- other fragments ---------------------------------------------------------

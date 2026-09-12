@@ -52,7 +52,7 @@ auscrawl/
   models.py      dataclasses: Semester, Section, Meeting, CatalogCourse, PrereqRule, CourseDetail
   http.py        RateLimiter (token bucket + AIMD), request_with_retry, make_client, is_blocked
   session.py     TermSession + SessionPool + verify_term — the stateful bind
-  parse_json.py  section/catalog JSON -> models, plus the legacy-format helpers
+  parse_json.py  section/catalog JSON -> models
   parse_html.py  the six HTML detail fragments -> models
   fetch.py       one coroutine per endpoint; all network access lives here
   db.py          SCHEMA, additive migration, bulk saves
@@ -77,7 +77,7 @@ Parsers are pure functions over `str | bytes` and do no I/O, so every parser tes
 - **Rate-limited, not concurrency-limited.** A global token-bucket `RateLimiter` paces request *starts* at `--rate` (default 10/s) with AIMD: a 429/503/challenge halves the rate, sustained success climbs back toward `MAX_RATE`. Worker count therefore does not change the load on Banner. Measured headroom is ~174 req/s with zero 429s — the low default is a deliberate courtesy, not a limit.
 - **`request_with_retry` is the single choke point for all HTTP.** It retries only 403/408/429/5xx (permanent 4xx fails fast), uses equal-jitter exponential backoff, honors `Retry-After`, and detects Cloudflare/F5 interstitials via `is_blocked`. New endpoints go through it.
 - **Banner 9 HTML-escapes text inside its JSON.** `courseTitle` arrives as `Qur&#39;an`. Every text field goes through `_txt()` in `parse_json.py`. Forgetting this on a new field is a silent data bug.
-- **Legacy column formats are contractual.** `days` is `MW`/`TR` (R = Thursday, U = Sunday), `start_time` is `11:00 am`, `classroom` is `Building Name Room` or `TBA`, `date_range` is `Aug 24, 2026 - Dec 10, 2026`. `parse_json.py` has a helper per format and `tests/test_db_save.py` pins them. Changing one breaks every published query.
+- **Legacy column formats are contractual.** `days` is `MW`/`TR` (R = Thursday, U = Sunday), `start_time` is `11:00 am`, `classroom` is `Building Name Room` or `TBA`, `date_range` is `Aug 24, 2026 - Dec 10, 2026`. `db.py` defines these formats in the SQL views, and `tests/test_schema.py` pins them. Changing one breaks every published query.
 - **Chronological `first_seen`.** `save_sections` sorts by `term_id` before inserting, so the first write of an instructor or subject is its earliest occurrence and the upserts never touch `first_seen`. `fix_first_seen` backfills from a `MIN(term_id)` afterwards.
 - **Saves upsert; they never `INSERT OR IGNORE`.** Ignoring conflicts silently skipped every pre-existing row in an earlier draft, so a re-crawl left the new columns empty — a bug unit tests on an empty database could not see. `save_catalog` updates only the columns the catalog search owns so it cannot reset the detail columns `save_course_details` writes, and `save_sections` deletes meeting blocks beyond the current count so a shrunken schedule leaves no ghosts.
 - **Stable browser fingerprint.** One current Chrome UA with matching `Sec-Fetch-*` / `Sec-CH-UA` / `Referer`. Do **not** add user-agent rotation — inconsistent identities are more anomalous than one consistent one. The same reasoning caps the session pool: a real browser is one session, so many short-lived sessions from one IP is a bot signal. `SESSION_POOL_SIZE` is sized for correctness (terms cannot share a session), not throughput.

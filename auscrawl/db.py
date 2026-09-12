@@ -218,12 +218,9 @@ CREATE TABLE IF NOT EXISTS legacy_section_extras (
 
 CREATE INDEX IF NOT EXISTS idx_sections_term ON sections(term_id);
 CREATE INDEX IF NOT EXISTS idx_sections_subject ON sections(subject, course_number);
-CREATE INDEX IF NOT EXISTS idx_meetings_section ON meetings(crn, term_id);
 CREATE INDEX IF NOT EXISTS idx_section_instructors_person
     ON section_instructors(banner_id);
 CREATE INDEX IF NOT EXISTS idx_section_instructors_name ON section_instructors(name);
-CREATE INDEX IF NOT EXISTS idx_course_versions_course
-    ON course_versions(subject, course_number);
 CREATE INDEX IF NOT EXISTS idx_prereq_rules_target
     ON prereq_rules(req_subject, req_course_number);
 

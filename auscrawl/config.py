@@ -58,10 +58,3 @@ BROWSER_HEADERS = {
     "sec-ch-ua-platform": '"macOS"',
     "Referer": f"{BASE}/classSearch/classSearch",
 }
-
-_SEASON_ORDER = {"10": 0, "11": 1, "20": 2, "30": 3, "40": 4}
-
-
-def term_name_to_sort_key(term_id: str) -> tuple[int, int]:
-    """Chronological key for a Banner term id such as '202611'."""
-    return (int(term_id[:4]), _SEASON_ORDER.get(term_id[4:], 9))

@@ -1,6 +1,6 @@
 import pytest
 
-from auscrawl import models, parse_json
+from auscrawl import parse_json
 from auscrawl.session import TermMismatch
 from tests.conftest import read_b9
 
@@ -60,45 +60,6 @@ def test_meetings_are_structured_not_concatenated():
     assert m.building and m.room
     assert m.building_name != m.building
     assert m.meeting_index == 0
-
-
-# --- legacy format compatibility --------------------------------------------
-
-def test_days_string_uses_the_legacy_letters():
-    m = models.Meeting(crn="1", term_id="t", meeting_index=0,
-                       monday=True, wednesday=True)
-    assert parse_json.days_string(m) == "MW"
-    m2 = models.Meeting(crn="1", term_id="t", meeting_index=0,
-                        tuesday=True, thursday=True)
-    assert parse_json.days_string(m2) == "TR"
-    m3 = models.Meeting(crn="1", term_id="t", meeting_index=0,
-                        saturday=True, sunday=True)
-    assert parse_json.days_string(m3) == "SU"
-    assert parse_json.days_string(models.Meeting(crn="1", term_id="t",
-                                                 meeting_index=0)) == ""
-
-
-def test_to_12h_matches_the_shipped_database_format():
-    assert parse_json.to_12h("1100") == "11:00 am"
-    assert parse_json.to_12h("1215") == "12:15 pm"
-    assert parse_json.to_12h("1345") == "1:45 pm"
-    assert parse_json.to_12h("0800") == "8:00 am"
-    assert parse_json.to_12h("0000") == "12:00 am"
-    assert parse_json.to_12h("1200") == "12:00 pm"
-    assert parse_json.to_12h("") == ""
-    assert parse_json.to_12h(None) == ""
-
-
-def test_format_date_range_matches_the_shipped_database_format():
-    assert parse_json.format_date_range("08/24/2026", "12/10/2026") == \
-        "Aug 24, 2026 - Dec 10, 2026"
-    assert parse_json.format_date_range("", "") == ""
-
-
-def test_classroom_string_matches_the_shipped_database_format():
-    m = models.Meeting(crn="1", term_id="t", meeting_index=0,
-                       building_name="School of Business Administrtn", room="1104")
-    assert parse_json.classroom_string(m) == "School of Business Administrtn 1104"
 
 
 def test_code_list_parses_reference_endpoints():
@@ -171,12 +132,3 @@ def test_html_entities_in_catalog_text_are_decoded():
     assert c.title == "Qur'an"
     assert c.description == 'Study of "classical" texts'
     assert c.college == "Arts & Sciences"
-
-
-def test_classroom_is_tba_when_a_meeting_has_no_room():
-    """The shipped database stores 'TBA' for an unassigned room, not ''."""
-    m = models.Meeting(crn="1", term_id="t", meeting_index=0)
-    assert parse_json.classroom_string(m) == "TBA"
-    m2 = models.Meeting(crn="1", term_id="t", meeting_index=0,
-                        building_name="SBA", room="1104")
-    assert parse_json.classroom_string(m2) == "SBA 1104"

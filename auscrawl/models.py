@@ -63,9 +63,6 @@ class Section:
     schedule_type: str = ""
     instructional_method: str = ""
     campus: str = ""
-    levels: str = ""
-    attributes_text: str = ""
-    registration_dates: str = ""
     part_of_term: str = ""
     section_id: int | None = None
     enrollment: int | None = None

@@ -40,7 +40,6 @@ class TermSession:
         self.client = client
         self.rate = rate
         self.term: str | None = None
-        self.mode: str | None = None
         self._ever_bound = False
 
     async def reset(self, mode: str) -> None:
@@ -66,7 +65,6 @@ class TermSession:
             rate=self.rate,
         )
         self.term = term_id
-        self.mode = mode
         self._ever_bound = True
 
     async def fetch_page(self, endpoint_key: str, term_id: str, offset: int,

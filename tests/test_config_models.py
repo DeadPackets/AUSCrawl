@@ -36,7 +36,6 @@ def test_section_defaults_are_empty_not_none():
     assert s.meetings == []
     assert s.instructors == []
     assert s.attributes == []
-    assert s.registration_dates == ""
 
 
 def test_prereq_rule_holds_either_a_course_or_a_test():

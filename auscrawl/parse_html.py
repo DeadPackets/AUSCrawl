@@ -132,15 +132,6 @@ def prereq_json(rules: list[PrereqRule]) -> str:
     return json.dumps(tree, separators=(",", ":")) if tree else ""
 
 
-def rule_label(r: PrereqRule) -> str:
-    if r.test_code:
-        return f"{r.test_code} >= {r.test_score}" if r.test_score else r.test_code
-    quals = ", ".join(p for p in (
-        r.req_level, f"min grade {r.min_grade}" if r.min_grade else "") if p)
-    base = f"{r.req_subject} {r.req_course_number}".strip()
-    return f"{base} ({quals})" if quals else base
-
-
 # --- other fragments ---------------------------------------------------------
 
 def fragment_text(raw: str | bytes) -> str:
